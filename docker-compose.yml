@@ -4,6 +4,8 @@ services:
     container_name: searxng
     volumes:
       - ./data/searxng:/etc/searxng
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - llm-net
     restart: unless-stopped
@@ -13,10 +15,15 @@ services:
     container_name: pipelines
     environment:
       - PIPELINES_API_KEY=${PIPELINES_API_KEY}
+    security_opt:
+      - seccomp:unconfined
+      - apparmor:unconfined
+      - label:type:container_engine_t
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./data/pipelines:/app/pipelines
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
     networks:
       - llm-net
     restart: unless-stopped
@@ -25,6 +32,8 @@ services:
     image: unclecode/crawl4ai:0.6.0-r2
     container_name: crawl4ai
     shm_size: 1g
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - llm-net
     restart: unless-stopped
@@ -34,6 +43,8 @@ services:
     container_name: crawl4ai-proxy
     ports:
       - "8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - llm-net
     restart: unless-stopped
@@ -46,6 +57,8 @@ services:
     environment:
       - UVICORN_WORKERS=1
       - DOCLING_SERVE_MAX_SYNC_WAIT=300
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - llm-net
     restart: unless-stopped
@@ -76,6 +89,7 @@ services:
       - WEBUI_AUTH_TRUSTED_EMAIL_HEADERS=${WEBUI_AUTH_TRUSTED_EMAIL_HEADERS}
       - LANGFUSE_HOST=${LANGFUSE_HOST}
       - USE_MODEL_NAME=${USE_MODEL_NAME}
+      - ENABLE_PERSISTENT_CONFIG=${ENABLE_PERSISTENT_CONFIG}
     security_opt:
       - seccomp:unconfined
       - apparmor:unconfined
@@ -96,6 +110,8 @@ services:
     container_name: qdrant
     volumes:
       - qdrant_data:/qdrant/storage
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - llm-net
     restart: unless-stopped
@@ -103,6 +119,8 @@ services:
   kokoro-tts:
     image: ghcr.io/remsky/kokoro-fastapi-cpu:latest
     container_name: kokoro-tts
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - llm-net
     restart: unless-stopped
@@ -113,6 +131,8 @@ services:
     command: ["--port", "8080"]
     environment:
       - ENABLE_TOOL_SEARCH=true
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - llm-net
     restart: unless-stopped
@@ -126,6 +146,8 @@ services:
       - POSTGRES_DB=calendar_db
     volumes:
       - calendar-db-data:/var/lib/postgresql/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - llm-net
     restart: unless-stopped
@@ -138,6 +160,8 @@ services:
       - CALENDAR_MCP_JWT_SECRET_KEY=my_secure_secret_123
     volumes:
       - calendar-mcp-data:/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - llm-net
     restart: unless-stopped
@@ -145,6 +169,8 @@ services:
   tor-gateway:
     image: dperson/torproxy
     container_name: tor-gateway
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - llm-net
     cap_add:
@@ -165,6 +191,8 @@ services:
   redis-cache:
     image: redis:alpine
     container_name: redis-cache
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - llm-net
     ports:
@@ -174,6 +202,8 @@ services:
   deep-web-mcp:
     build: ./deep-web-mcp
     container_name: deep-web-mcp
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - llm-net
     environment:
