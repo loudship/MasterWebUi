@@ -16,7 +16,7 @@ graph TD
     User([User Browser]) -->|Port 3080| OWUI[Open WebUI Container]
     
     %% Main Workspace Core
-    subgraph Custom Docker Bridge Network (llm-net)
+    subgraph "Custom Docker Bridge Network (llm-net)"
         OWUI -->|Internal DNS| Pipe[Pipelines Container]
         OWUI -->|Internal DNS| Searx[SearXNG Metasearch]
         OWUI -->|Internal DNS| Qdrant[(Qdrant Vector DB)]
