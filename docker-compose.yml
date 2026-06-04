@@ -1,0 +1,197 @@
+services:
+  searxng:
+    image: searxng/searxng:latest
+    container_name: searxng
+    volumes:
+      - ./data/searxng:/etc/searxng
+    networks:
+      - llm-net
+    restart: unless-stopped
+
+  pipelines:
+    image: ghcr.io/open-webui/pipelines:main
+    container_name: pipelines
+    environment:
+      - PIPELINES_API_KEY=${PIPELINES_API_KEY}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data/pipelines:/app/pipelines
+    networks:
+      - llm-net
+    restart: unless-stopped
+
+  crawl4ai:
+    image: unclecode/crawl4ai:0.6.0-r2
+    container_name: crawl4ai
+    shm_size: 1g
+    networks:
+      - llm-net
+    restart: unless-stopped
+
+  crawl4ai-proxy:
+    image: ghcr.io/lennyerik/crawl4ai-proxy:latest
+    container_name: crawl4ai-proxy
+    ports:
+      - "8000:8000"
+    networks:
+      - llm-net
+    restart: unless-stopped
+
+  docling-serve:
+    image: quay.io/docling-project/docling-serve:latest
+    container_name: docling-serve
+    ports:
+      - "5001:5001"
+    environment:
+      - UVICORN_WORKERS=1
+      - DOCLING_SERVE_MAX_SYNC_WAIT=300
+    networks:
+      - llm-net
+    restart: unless-stopped
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: open-webui
+    environment:
+      - OPENAI_API_BASE_URL=${OPENAI_API_BASE_URL}
+      - ENABLE_WEB_SEARCH=${ENABLE_WEB_SEARCH}
+      - WEB_SEARCH_ENGINE=${WEB_SEARCH_ENGINE}
+      - SEARXNG_QUERY_URL=${SEARXNG_QUERY_URL}
+      - WEB_SEARCH_TRUST_ENV=${WEB_SEARCH_TRUST_ENV}
+      - WEB_SEARCH_RESULT_COUNT=${WEB_SEARCH_RESULT_COUNT}
+      - WEB_LOADER_CONCURRENT_REQUESTS=${WEB_LOADER_CONCURRENT_REQUESTS}
+      - WEB_SEARCH_CONCURRENT_REQUESTS=${WEB_SEARCH_CONCURRENT_REQUESTS}
+      - RAG_SYSTEM_CONTEXT=${RAG_SYSTEM_CONTEXT}
+      - WEB_LOADER_ENGINE=${WEB_LOADER_ENGINE}
+      - EXTERNAL_WEB_LOADER_URL=${EXTERNAL_WEB_LOADER_URL}
+      - EXTERNAL_WEB_LOADER_API_KEY=${EXTERNAL_WEB_LOADER_API_KEY}
+      - CONTENT_EXTRACTION_ENGINE=${CONTENT_EXTRACTION_ENGINE}
+      - DOCLING_ENGINE_URL=${DOCLING_ENGINE_URL}
+      - ENABLE_OPENAI_IMAGE_URL=${ENABLE_OPENAI_IMAGE_URL}
+      - CODE_EVAL_VALVE_OVERRIDE_MAX_RUNTIME_SECONDS=${CODE_EVAL_VALVE_OVERRIDE_MAX_RUNTIME_SECONDS}
+      - CODE_EVAL_VALVE_OVERRIDE_REQUIRE_RESOURCE_LIMITING=${CODE_EVAL_VALVE_OVERRIDE_REQUIRE_RESOURCE_LIMITING}
+      - CODE_EVAL_VALVE_OVERRIDE_AUTO_INSTALL=${CODE_EVAL_VALVE_OVERRIDE_AUTO_INSTALL}
+      - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY}
+      - WEBUI_AUTH_TRUSTED_EMAIL_HEADERS=${WEBUI_AUTH_TRUSTED_EMAIL_HEADERS}
+      - LANGFUSE_HOST=${LANGFUSE_HOST}
+      - USE_MODEL_NAME=${USE_MODEL_NAME}
+    security_opt:
+      - seccomp:unconfined
+      - apparmor:unconfined
+      - label:type:container_engine_t
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "3080:8080"
+    volumes:
+      - ./data/open-webui:/app/backend/data
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    networks:
+      - llm-net
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - llm-net
+    restart: unless-stopped
+
+  kokoro-tts:
+    image: ghcr.io/remsky/kokoro-fastapi-cpu:latest
+    container_name: kokoro-tts
+    networks:
+      - llm-net
+    restart: unless-stopped
+
+  ha-mcp:
+    image: zorak1103/ha-mcp:latest
+    container_name: ha-mcp
+    command: ["--port", "8080"]
+    environment:
+      - ENABLE_TOOL_SEARCH=true
+    networks:
+      - llm-net
+    restart: unless-stopped
+
+  calendar-db:
+    image: postgres:15-alpine
+    container_name: calendar-db
+    environment:
+      - POSTGRES_USER=calendar
+      - POSTGRES_PASSWORD=calendar_secure_pass
+      - POSTGRES_DB=calendar_db
+    volumes:
+      - calendar-db-data:/var/lib/postgresql/data
+    networks:
+      - llm-net
+    restart: unless-stopped
+
+  calendar-mcp:
+    image: hdn179/calendar-mcp:latest
+    container_name: calendar-mcp
+    environment:
+      - DB_POSTGRES_URL=postgresql://calendar:calendar_secure_pass@calendar-db:5432/calendar_db
+      - CALENDAR_MCP_JWT_SECRET_KEY=my_secure_secret_123
+    volumes:
+      - calendar-mcp-data:/app/data
+    networks:
+      - llm-net
+    restart: unless-stopped
+
+  tor-gateway:
+    image: dperson/torproxy
+    container_name: tor-gateway
+    networks:
+      - llm-net
+    cap_add:
+      - NET_ADMIN
+    restart: unless-stopped
+
+  browserless:
+    image: browserless/chrome:latest
+    container_name: browserless
+    network_mode: "service:tor-gateway"
+    environment:
+      - CONCURRENT=10
+      - QUEUED=20
+      - TIMEOUT=60000
+    shm_size: 2g
+    restart: unless-stopped
+
+  redis-cache:
+    image: redis:alpine
+    container_name: redis-cache
+    networks:
+      - llm-net
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+  deep-web-mcp:
+    build: ./deep-web-mcp
+    container_name: deep-web-mcp
+    networks:
+      - llm-net
+    environment:
+      - REDIS_URL=redis://redis-cache:6379/0
+      - DATABASE_URL=sqlite:///./data/auth_vault.db
+      - AES_SECRET_KEY=${AES_SECRET_KEY}
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY}
+      - LANGFUSE_HOST=${LANGFUSE_HOST}
+    volumes:
+      - ./data/deep-web-mcp:/app/data
+    restart: unless-stopped
+
+networks:
+  llm-net:
+    driver: bridge
+
+volumes:
+  qdrant_data:
+  calendar-mcp-data:
+  calendar-db-data:

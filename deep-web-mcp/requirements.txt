@@ -1,0 +1,14 @@
+fastapi
+fastmcp
+sqlalchemy
+passlib
+cryptography
+redis
+pydantic
+uvicorn
+httpx
+sse-starlette
+crawl4ai
+playwright
+
+langfuse

@@ -1,0 +1,32 @@
+# Git Ignore Rules for MasterWebUi Workspace
+
+# Environment variables containing sensitive keys and secrets
+.env
+
+# Docker volumes and local data directories (ignored except SearXNG settings template)
+data/*
+!data/searxng/
+data/searxng/*
+!data/searxng/settings.yml
+
+# External skills repository (separately managed git clone)
+langfuse-skills/
+
+# Output and temporary log files
+out.txt
+*.log
+*.tmp
+
+# Python files
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+env/
+
+# Operating System files
+.DS_Store
+Thumbs.db
+Desktop.ini
