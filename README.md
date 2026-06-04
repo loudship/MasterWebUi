@@ -66,6 +66,14 @@ graph TD
 
 ---
 
+## 📚 Documentation & Blueprints
+To help AI agents and developers easily navigate the repository architecture and past plans, comprehensive documentation is stored in the `docs/blueprints/` directory.
+
+- **System State & Health**: `docs/blueprints/system_state_health_reportV1.md`
+- **Architecture Blueprints**: Available within the blueprints directory.
+
+---
+
 ## 🚀 Getting Started
 
 ### 📋 Prerequisites
