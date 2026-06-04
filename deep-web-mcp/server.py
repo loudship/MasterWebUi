@@ -80,6 +80,12 @@ async def fetch_deep_web_data(url: str, session_required: bool = False, use_tor_
 
         if result.success:
             markdown_content = result.markdown
+            
+            # Truncation to preserve VRAM
+            MAX_CHARS = 20000
+            if len(markdown_content) > MAX_CHARS:
+                markdown_content = markdown_content[:MAX_CHARS] + "\n\n[WARNING: Payload truncated to preserve VRAM. End of safe context limit.]"
+            
             # Cache the result for 1 hour
             redis_client.setex(f"mcp_cache:{url_hash}", 3600, markdown_content)
             return json.dumps({"status": "success", "content": markdown_content})
