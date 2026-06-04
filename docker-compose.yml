@@ -93,6 +93,10 @@ services:
       - MCPS=${MCPS}
       - MCPS_URLS=${MCPS}
       - AGENT_MAX_STEPS=${AGENT_MAX_STEPS}
+      - VECTOR_DB=${VECTOR_DB}
+      - QDRANT_URL=${QDRANT_URL}
+      - CHUNK_SIZE=${CHUNK_SIZE}
+      - CHUNK_OVERLAP=${CHUNK_OVERLAP}
       - USE_MODEL_NAME=${USE_MODEL_NAME}
       - ENABLE_PERSISTENT_CONFIG=${ENABLE_PERSISTENT_CONFIG}
     security_opt:
@@ -114,7 +118,7 @@ services:
     image: qdrant/qdrant:latest
     container_name: qdrant
     volumes:
-      - qdrant_data:/qdrant/storage
+      - ./data/qdrant:/qdrant/storage
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
@@ -227,6 +231,5 @@ networks:
     driver: bridge
 
 volumes:
-  qdrant_data:
   calendar-mcp-data:
   calendar-db-data:
