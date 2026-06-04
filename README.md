@@ -13,7 +13,7 @@ The system maintains isolation via a custom Docker bridge network (`llm-net`) wh
 ```mermaid
 graph TD
     %% Clients
-    User([User Browser]) -->|Port 3080| OWUI[Open WebUI Container]
+    User([User Browser]) -->|Port 8080| OWUI[Open WebUI Container]
     
     %% Main Workspace Core
     subgraph "Custom Docker Bridge Network (llm-net)"
@@ -121,7 +121,7 @@ By default, LM Studio binds exclusively to `127.0.0.1` (localhost). Because Open
 
 ### 2. Register Pipelines in Open WebUI Dashboard
 To activate Custom Python Pipelines:
-- Open Open WebUI (`http://localhost:3080`) in your browser and log in as Admin.
+- Open Open WebUI (`http://localhost:8080`) in your browser and log in as Admin.
 - Navigate to **Admin Panel > Settings > Connections**.
 - Under Pipelines, add a connection:
   - **API Host**: `http://pipelines:9099` (Do *not* use localhost)

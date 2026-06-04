@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from database import get_credentials, save_credentials
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
 from sse_starlette.sse import EventSourceResponse
-from langfuse.decorators import observe, langfuse_context
+from langfuse import observe
 
 # Environment configuration
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis-cache:6379/0")
@@ -32,9 +32,6 @@ async def fetch_deep_web_data(url: str, session_required: bool = False, use_tor_
     Extract data from deep web portals or SPAs using headless browsers.
     Use this when targeting dynamic JavaScript applications or bypassing authentication.
     """
-    langfuse_context.update_current_observation(
-        input={"url": url, "session_required": session_required, "use_tor": use_tor_network}
-    )
     # 1. Check Cache
     query_signature = f"{url}_{session_required}_{use_tor_network}_{js_script}"
     url_hash = hashlib.sha256(query_signature.encode()).hexdigest()
@@ -97,9 +94,6 @@ async def search_deep_web_database(target_database: str, search_query: str, sess
     """
     Search specific deep web databases or academic registries using SearXNG JSON engines.
     """
-    langfuse_context.update_current_observation(
-        input={"target_database": target_database, "search_query": search_query}
-    )
     # 1. Check cache
     query_signature = f"{target_database}_{search_query}_{use_tor_network}"
     query_hash = hashlib.sha256(query_signature.encode()).hexdigest()

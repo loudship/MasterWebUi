@@ -83,7 +83,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "3080:8080"
+      - "8080:8080"
     volumes:
       - ./data/open-webui:/app/backend/data
       - /sys/fs/cgroup:/sys/fs/cgroup:rw
