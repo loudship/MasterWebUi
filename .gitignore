@@ -16,9 +16,33 @@ langfuse-skills/
 out.txt
 db_output.txt
 *.log
+*.log.*
+*.out
+*.err
 *.tmp
+logs/
 .pytest_cache/
 .agents/
+
+# Local databases and transient SQLite sidecars
+*.db
+*.sqlite*
+*-wal
+*-shm
+*-journal
+
+# Local model weights and caches
+*.gguf
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+*.onnx
+models/
+weights/
+.cache/
+model-cache/
+model_cache/
 
 # Python files
 __pycache__/
@@ -47,3 +71,8 @@ backup_staging_*/
 # Large local source snapshots and scratch trees
 open-webui-0.9.6/
 tmp_retrieval/
+
+# Local Docker volume directories
+docker-volumes/
+.docker-volumes/
+local-volumes/
