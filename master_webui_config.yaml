@@ -1,0 +1,26 @@
+rag:
+  CHUNK_SIZE: 1000
+  CHUNK_OVERLAP: 100
+  TOP_K: 3
+  CONTENT_EXTRACTION_ENGINE: "" # Default to CPU-bound parsers to save VRAM
+
+search:
+  ENABLE_WEB_SEARCH: true
+  WEB_SEARCH_ENGINE: "searxng"
+  WEB_SEARCH_RESULT_COUNT: 3
+  WEB_SEARCH_CONCURRENT_REQUESTS: 2
+  SEARXNG_QUERY_URL: "http://searxng:8080/search"
+
+models:
+  DEFAULT_MODEL_PARAMS:
+    system: "You are an agentic assistant. You must utilize provided tools efficiently, strictly answer the user's queries, and avoid context bloat."
+    options:
+      num_ctx: 16000
+
+audio:
+  tts:
+    ENGINE: "openai"
+    MODEL: "kokoro"
+    VOICE: "af_heart"
+    OPENAI_API_BASE_URL: "http://host.docker.internal:8880/v1"
+    OPENAI_API_KEY: "sk-kokoro"

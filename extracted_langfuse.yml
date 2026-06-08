@@ -1,0 +1,103 @@
+Created At: 2026-06-04T15:59:14Z
+Completed At: 2026-06-04T15:59:14Z
+File Path: `file:///c:/open-webui-master/langfuse.yml`
+Total Lines: 179
+Total Bytes: 8067
+Showing lines 1 to 179
+The following code has been modified to include a line number before every line, in the format: <line_number>: <original_line>. Please note that any changes targeting the original code should remove the line number, colon, and leading space.
+1: # Make sure to update the credential placeholders with your own secrets.
+2: # We mark them with # CHANGEME in the file below.
+3: # In addition, we recommend to restrict inbound traffic on the host to langfuse-web (port 3000) and minio (port 9090) only.
+4: # All other components are bound to localhost (127.0.0.1) to only accept connections from the local machine.
+5: # External connections from other machines will not be able to reach these services directly.
+6: services:
+7:   langfuse-worker:
+8:     image: docker.io/langfuse/langfuse-worker:3
+9:     restart: always
+10:     depends_on: &langfuse-depends-on
+11:       postgres:
+12:         condition: service_healthy
+13:       minio:
+14:         condition: service_healthy
+15:       redis:
+16:         condition: service_healthy
+17:       clickhouse:
+18:         condition: service_healthy
+19:     ports:
+20:       - 127.0.0.1:3030:3030
+21:     environment: &langfuse-worker-env
+22:       NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:3000}
+23:       DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/postgres} # CHANGEME
+24:       SALT: ${SALT:-mysalt} # CHANGEME
+25:       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-0000000000000000000000000000000000000000000000000000000000000000} # CHANGEME: generate via `openssl rand -hex 32`
+26:       TELEMETRY_ENABLED: ${TELEMETRY_ENABLED:-true}
+27:       LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: ${LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES:-false}
+28:       CLICKHOUSE_MIGRATION_URL: ${CLICKHOUSE_MIGRATION_URL:-clickhouse://clickhouse:9000}
+29:       CLICKHOUSE_URL: ${CLICKHOUSE_URL:-http://clickhouse:8123}
+30: 
+<truncated 5264 bytes>
+ command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
+117:     environment:
+118:       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minio}
+119:       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-miniosecret} # CHANGEME
+120:     ports:
+121:       - 9090:9000
+122:       - 127.0.0.1:9091:9001
+123:     volumes:
+124:       - langfuse_minio_data:/data
+125:     healthcheck:
+126:       test: ["CMD", "mc", "ready", "local"]
+127:       interval: 1s
+128:       timeout: 5s
+129:       retries: 5
+130:       start_period: 1s
+131: 
+132:   redis:
+133:     image: docker.io/redis:7
+134:     restart: always
+135:     # CHANGEME: row below to secure redis password
+136:     command: >
+137:       --requirepass ${REDIS_AUTH:-myredissecret}
+138:       --maxmemory-policy noeviction
+139:     ports:
+140:       - 127.0.0.1:6379:6379
+141:     volumes:
+142:       - langfuse_redis_data:/data
+143:     healthcheck:
+144:       test: ["CMD", "redis-cli", "ping"]
+145:       interval: 3s
+146:       timeout: 10s
+147:       retries: 10
+148: 
+149:   postgres:
+150:     image: docker.io/postgres:${POSTGRES_VERSION:-17}
+151:     restart: always
+152:     healthcheck:
+153:       test: ["CMD-SHELL", "pg_isready -U postgres"]
+154:       interval: 3s
+155:       timeout: 3s
+156:       retries: 10
+157:     environment:
+158:       POSTGRES_USER: ${POSTGRES_USER:-postgres}
+159:       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres} # CHANGEME
+160:       POSTGRES_DB: ${POSTGRES_DB:-postgres}
+161:       TZ: UTC
+162:       PGTZ: UTC
+163:     ports:
+164:       - 127.0.0.1:5432:5432
+165:     volumes:
+166:       - langfuse_postgres_data:/var/lib/postgresql/data
+167: 
+168: volumes:
+169:   langfuse_postgres_data:
+170:     driver: local
+171:   langfuse_clickhouse_data:
+172:     driver: local
+173:   langfuse_clickhouse_logs:
+174:     driver: local
+175:   langfuse_minio_data:
+176:     driver: local
+177:   langfuse_redis_data:
+178:     driver: local
+179: 
+The above content shows the entire, complete file contents of the requested file.

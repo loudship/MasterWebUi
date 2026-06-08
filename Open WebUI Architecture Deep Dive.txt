@@ -1,0 +1,456 @@
+﻿Unified Offline AI Ecosystem: Architectural Blueprint, Deep Research Analysis, and Agent Workload Handoffs
+Operational Planning and Offline Hardware-Optimized Topology
+Building a high-performance, enterprise-grade artificial intelligence platform that operates within a 100% offline, air-gapped infrastructure requires precise hardware resource allocation and container isolation.1 The deployment architecture must be designed to run locally, eliminating external dependencies while maximizing the processing capabilities of the host system.2
+The physical environment is anchored by an AMD Ryzen 9 9950X 16-Core Processor, an Nvidia GeForce RTX 5070 graphics processing unit with 12GB of dedicated VRAM, and 64GB of DDR5 system memory.2
+In a local deployment, the computational workload is divided between these hardware layers.2 The RTX 5070 is reserved exclusively for high-speed LLM tensor generation and parallelized matrix multiplication, driven by a local Ollama or vLLM engine.2 Because the GPU is constrained by a 12GB VRAM ceiling, loading massive models alongside active system context windows presents a significant risk of CUDA Out-of-Memory (OOM) failures.2
+To protect the hardware, the active context window sent to the model for inference is strictly capped at an 8,000-token limit.2
+Conversely, the AMD Ryzen 9 9950X CPU and the 64GB system memory handle the concurrent, non-inference workloads.2 This includes managing the local PostgreSQL database, running the Valkey/Redis cache broker 5, executing the vector database (pgvector) 5, tracking multi-agent graph states, and hosting containerized data extraction sidecars.2
+To support local search capabilities, a private search and web scraping network is integrated into the Docker-compose topology.2
+A SearXNG instance runs as an isolated, local meta-search container, providing privacy-compliant search queries without tracking.2
+For data extraction, Crawl4AI and Firecrawl containers are deployed to parse raw web pages, extract markdown text, and feed the retrieved tokens into local vector indexers.2
+Local Docker Network and Container Topology
+
+
+Service Name
+	Container Isolation & Network Mode
+	Hardware Allocation Binding
+	Target Interface / Port
+	Primary Role in the Offline RAG Pipeline
+	master-webui
+	Private bridge network with offline mode enabled.1
+	Bound to Ryzen 9 CPU and 16GB System RAM.2
+	Local HTTP Port 8080.8
+	Serves the web UI, processes filters, and routes user requests.2
+	local-inference
+	Bound to private bridge; host gateway access.4
+	Dedicated Nvidia RTX 5070 (12GB VRAM).2
+	Local HTTP Port 11434.4
+	Executes local LLM inference tensor operations.3
+	state-broker
+	Private bridge network; internal routing only.5
+	Bound to Ryzen 9 CPU and 8GB System RAM.2
+	TCP Port 6379.5
+	Manages WebSocket connections and token revocation.5
+	local-postgres
+	Private bridge network; internal routing only.6
+	Bound to Ryzen 9 CPU and 16GB System RAM.2
+	TCP Port 5432.6
+	Stores persistent chat histories and user roles.2
+	searxng-search
+	Private bridge network; internal routing only.2
+	Bound to Ryzen 9 CPU and 4GB System RAM.2
+	Local HTTP Port 8081.2
+	Performs local meta-search and indexes search queries.2
+	crawl4ai-extractor
+	Private bridge network; internal routing only.2
+	Bound to Ryzen 9 CPU and 8GB System RAM.2
+	Local HTTP Port 8082.2
+	Scrapes target web pages and extracts raw markdown.2
+	Logical Topology and Data Flow Diagram
+
+
+
+
+
+
++---------------------------------------------------------------------------------+
+|                                 USER BROWSER                                    |
+|                                                                                 |
+|                       Sends requests & receives events                          |
++---------------------------------------------------------------------------------+
+                                     |
+                                     | HTTP / WebSockets (Port 8080)
+                                     v
++---------------------------------------------------------------------------------+
+|                                MASTER-WEBUI                                     |
+|                                                                                 |
+|  - In-Process Python "Pipe" and "Filter" Functions                             |
+|  - Executes within async worker thread pool                                     |
++---------------------------------------------------------------------------------+
+         |                               |                        |
+         | HTTP (Port 11434)             | TCP (Port 6379)        | TCP (Port 5432)
+         v                               v                        v
++------------------+             +------------------+     +------------------+
+| LOCAL-INFERENCE  |             |   STATE-BROKER   |     |  LOCAL-POSTGRES  |
+|  (Ollama/vLLM)   |             | (Valkey/Redis)   |     |   (pgvector)     |
+|                  |             |                  |     |                  |
+| Bound to GPU     |             | Tracks sockets   |     | Stores chat logs |
+| (RTX 5070)       |             | & token state    |     | & system schemas |
++------------------+             +------------------+     +------------------+
+         |
+         | Local HTTP API
+         v
++---------------------------------------------------------------------------------+
+|                            DATA EXTRACTION SUITE                                |
+|                                                                                 |
+|  - searxng-search (Local meta-search queries)                                   |
+|  - crawl4ai-extractor (Raw web scraping and markdown parsing)                   |
++---------------------------------------------------------------------------------+
+
+Deep Research Synthesis of Advanced Open WebUI Mechanics
+Extensibility and Deprecation: Functions vs. Pipelines
+The integration model within the platform has undergone a critical architectural shift, marked by the deprecation of legacy external "Pipelines" in favor of native, in-process "Functions".9
+Historically, Pipelines operated as independent, containerized Python microservices running in a separate worker container.9 This design was introduced because the early Python backend relied on a synchronous event loop.9 Running heavy computational tasks or blocking HTTP calls directly within the main loop would block thread execution, causing interface lag and performance degradation for concurrent sessions.9
+However, with the implementation of a fully asynchronous, asyncio-based backend architecture, this performance bottleneck has been resolved.9
+Synchronous or CPU-bound extension code is now automatically offloaded to a dedicated background worker thread pool, which is managed by the THREAD_POOL_SIZE configuration variable.9
+Because long-running operations like awaiting remote API calls or running multi-agent state machines can execute asynchronously without blocking the primary event loop, the performance requirement for an external pipeline container no longer applies.9
+Consequently, in-process Python Functions—such as Pipes, Filters, and Actions—are now the recommended mechanism for extending system capabilities.9
+Migrating a stateful LangGraph proxy from an external HTTP pipeline container to a native, in-process Pipe or Filter function yields significant performance and operational benefits.9
+An in-process Function executes directly within the parent application's memory space, eliminating the latency overhead of network transport, JSON serialization, and multi-container orchestration.9
+Furthermore, this native approach simplifies the deployment topology, allowing the entire ecosystem to run within a single container while maintaining direct access to system hooks and WebSocket events.9
+A Pipe function registers as a custom model provider, populating the UI's model dropdown list and routing chat queries to remote orchestrators.9 A Filter function acts as middleware on the message bus, executing custom logic via two main entry points: inlet filters and outlet filters.12
+The inlet filter intercepts the incoming payload before it is sent to the LLM, enabling real-time prompt engineering, input validation, context injection, and compliance scanning.7
+The outlet filter captures the completed model output, enabling real-time post-processing, PII redaction, token count validation, and database updates.7
+By consolidating these hooks into a native, in-process Function, the integration achieves near-zero transport latency, ensuring a responsive user experience.9
+Advanced Event Hooks: Emitters, Calls, and Dynamic Embeds
+Dynamic interaction between backend integration logic and the frontend user interface is managed via a WebSocket-based event routing layer.13 The platform exposes two primary execution helpers to facilitate this communication: the one-way event_emitter and the interactive, bidirectional event_call.13
+
+
+
+
+
+
++---------------------------------------------------------------------------------+
+|                             WEBSOCKET EVENT PATHWAY                             |
+|                                                                                 |
+|  +---------------------+            1. Event Call            +---------------+  |
+|  |   Master Backend    |====================================>|  User Browser |  |
+|  | (Suspends execution)|                                     |  (Chat UI)    |  |
+|  +---------------------+                                     +---------------+  |
+|             ^                                                        |          |
+|             |                                                        |          |
+|             |                       2. Client Response               |          |
+|             +--------------------------------------------------------+          |
+|                                                                                 |
++---------------------------------------------------------------------------------+
+
+The event_emitter helper operates on a fire-and-forget basis, delivering real-time progress logs, toast notifications, or status updates to the client browser.13
+If the client closes their browser tab or disconnects during execution, the emitter fails silently—messages are routed to an empty room and discarded, but the backend process runs to completion.2
+In contrast, the event_call helper is designed for bidirectional communication, temporarily pausing backend execution to wait for a user response.13
+This helper requires a persistent, active WebSocket connection.2 If the user disconnects mid-execution, the blocking call will fail, throwing a socket exception on the server.2
+By default, the server enforces a 300-second execution window for interactive responses, which administrators can customize using the environment variable WEBSOCKET_EVENT_CALLER_TIMEOUT.2
+Developing custom tools and functions requires an understanding of how the model-calling mode affects these event hooks. The platform supports a legacy, prompt-injection-based Default Mode and a modern, agentic Native Mode.14
+In Native Mode, the model utilizes its structured tool-calling API to manage execution, and the server constructs content blocks by repeatedly emitting full serialized snapshots.14
+This continuous rewriting process creates direct resource conflicts with several legacy event hooks; specifically, inline message-manipulation events such as message and chat:message:delta will be continuously overwritten by incoming snapshots, resulting in disappearing text, UI flickering, and state corruption.14
+To prevent these conflicts, custom tools operating in Native Mode must avoid inline content-rewriting events.14
+Instead, progress tracking should be routed through status updates, and the final output must be delivered directly as the return value of the tool method, ensuring seamless integration with the agentic loop.14
+WebSocket Event Payload Specifications
+
+
+Event Type Name
+	API Integration Type
+	Required Key-Value Payload Structure
+	Native Mode Stability
+	Primary Use Case in UI
+	status
+	event_emitter 13
+	{"description": "string", "done": bool, "hidden": bool} 2
+	Highly Stable 14
+	Real-time progress tracking and loading animations.2
+	notification
+	event_emitter 13
+	{"type": "info" | "success" | "warning" | "error", "content": "string"} 2
+	Highly Stable 14
+	Delivering system alerts, exceptions, or warnings.2
+	citation
+	event_emitter 13
+	{"citation": {"document": "string", "index": int}} 2
+	Highly Stable 14
+	Displaying document references in retrieval-augmented runs.14
+	confirmation
+	event_call 13
+	{"title": "string", "message": "string"} 2
+	Stable 14
+	Prompting for human approval before write actions.2
+	input
+	event_call 13
+	{"title": "string", "message": "string", "placeholder": "string", "type": "password" | "text"} 2
+	Stable 14
+	Prompting for dynamic API credentials or variables.2
+	embeds
+	event_emitter 13
+	{"embeds": ["html_string"], "replace": bool} 2
+	Stable 16
+	Injecting interactive widgets, forms, and tools.2
+	To push custom user interface components directly into the chat stream without a full page refresh, the platform leverages a Rich UI Embeds pipeline.2
+When a tool returns an HTML body or emits an embeds event, the backend processes the raw markup and mounts it inside a sandboxed iframe on the client interface.2
+This sandboxed iframe isolates the custom HTML from the primary application DOM for security, while enabling client-side script execution.2
+To manage dynamic UI updates, the system supports both append and replace behaviors.2
+If the replace parameter is set to true, any newly emitted embed payload completely overwrites the existing message embeds array, allowing developers to implement real-time progress bars, interactive status dashboards, or live data charts without cluttering the chat history.2
+To build an interactive human-in-the-loop validation interface, an "action-as-message" pattern is established.16
+The custom iframe captures click events (such as an Approve or Reject button) and posts a serialized action object back to the parent browser window using the standard postMessage API.16
+The parent listener intercepts this payload and injects it back to the backend as a virtual user turn, unblocking the execution loop natively without requiring core application modifications.16
+Alternatively, Action Functions can define multiple sub-actions using a structured array configuration containing unique identifiers, display names, and SVG icons.15
+When a model with configured actions generates an assistant message, these sub-actions render as native, clickable buttons directly in the message toolbar.15
+The ordering of these buttons is controlled by the priority configuration key within the action's settings, where lower values position buttons further to the left.15
+Because these buttons execute natively on the server side, they have direct, secure access to the FastAPI request headers, model metadata, and user session context, offering a robust and elegant interface for executing human interventions.15
+Security & Zero-Trust Hardening
+Operating an enterprise-grade web application with server-side Python execution capabilities requires strict security hardening and a zero-trust architecture.2 The platform employs a dual-configuration management model.18
+On initial boot, environment variables are read and written to an internal database.18
+For variables designated as persistent configuration variables (ConfigVar), subsequent application restarts will ignore changes to the host environment variables, relying instead on the values stored in the database.18
+In production environments, this behavior poses a severe risk of configuration drift and unauthorized modifications.18
+To prevent this, administrators must set ENABLE_PERSISTENT_CONFIG to False.18
+This setting locks the configuration state, forcing the application to read environment variables on every startup, ensuring configuration consistency and preventing UI-based modifications from persisting across container restarts.18
+Administrators must understand that the platform does not provide cryptographic tenant isolation.2
+Setting restrictions in the admin panel only modifies what is displayed in the user interface; it does not establish secure network or database boundaries.2
+Because the administrator role possesses root-equivalent access and can execute arbitrary Python code on the host process via tools and custom functions, any admin can bypass UI restrictions to access data across the database.17
+To achieve true zero-trust data isolation, organizations must deploy entirely separate containerized application instances for each tenant, ensuring isolation at the process, network, and database levels.2
+To lock down the environment, administrators should configure the following environment variables:
+Production Security Hardening Variable Configurations
+
+
+Environment Variable Name
+	Default Value
+	Hardened Target Value
+	Primary Security Objective & Attendant Risk Mitigation
+	ENV
+	dev 18
+	prod 2
+	Disables the interactive FastAPI Swagger/OpenAPI documentation interface at /docs.2
+	ENABLE_PERSISTENT_CONFIG
+	True
+	False 18
+	Forces the system to read configuration from environment variables on boot, preventing database-based configuration drift.18
+	WEBUI_SECRET_KEY
+	None (Auto) 1
+	Strong Shared Key 1
+	Secures JWT signatures and encrypts OAuth session tokens consistently across multi-container restarts.1
+	DEFAULT_USER_ROLE
+	pending 18
+	pending 2
+	Suspends newly registered accounts until an administrator manually audits and activates them.2
+	CORS_ALLOW_ORIGIN
+	* 2
+	Specific FQDN 2
+	Restricts cross-origin resource requests to authorized domains, securing WebSocket connections from CSRF exploits.2
+	ENABLE_PIP_INSTALL_FRONTMATTER_REQUIREMENTS
+	True
+	False 2
+	Disables dynamic, unverified package installation via Python tool frontmatter headers, preventing arbitrary package execution.2
+	ENABLE_SIGNUP
+	True 18
+	False 2
+	Disables open registration, allowing user creation only via admin invitation or authenticated SSO provisioning.2
+	ENABLE_OPENAI_API_PASSTHROUGH
+	True
+	False 2
+	Prevents users from accessing upstream LLM endpoints using the server's master administrative credentials.2
+	ENABLE_DIRECT_CONNECTIONS
+	False 1
+	False 2
+	Prevents users from adding custom, unmonitored model endpoints and external API keys in their browsers.2
+	WEBUI_SESSION_COOKIE_SECURE
+	False 1
+	True 1
+	Enforces cookie transmission exclusively over encrypted HTTPS channels, protecting session tokens from interception.1
+	WEBUI_SESSION_COOKIE_SAME_SITE
+	lax 1
+	strict 1
+	Controls browser cookie behavior to prevent unauthorized cross-site request forgery attempts.1
+	OAUTH_ALLOWED_DOMAINS
+	* 1
+	Specific Domain 1
+	Restricts SSO logins to a single email domain, preventing unauthorized external access.1
+	ENABLE_PROFILE_IMAGE_URL_FORWARDING
+	True
+	False 6
+	Blocks outbound avatar URL redirects, preventing browser client IP addresses and User-Agents from leaking to untrusted hosts.6
+	Implementing server-side Python functions requires robust process-level isolation.17
+Administrators must run the container as a non-root user, mount the underlying file systems as read-only where possible, and configure host security parameters to deny privilege escalation.
+Outbound network access should be tightly restricted using firewalls or zero-trust proxies to block Server-Side Request Forgery (SSRF) attempts.1
+For high-security or air-gapped environments, the system must be configured with OFFLINE_MODE=True, which completely disables outbound calls to HuggingFace hubs, external update servers, and public avatar services, establishing a secure offline boundary.1
+Native Model Context Protocol (MCP) Integration
+The Model Context Protocol (MCP) establishes a standardized transport layer for exposing local databases, file systems, and custom APIs to large language models.9 In multi-user web environments, native MCP execution presents unique transport and security challenges.2
+The platform supports native MCP connections, but this support is strictly limited to Streamable HTTP transports.2
+Standard MCP servers frequently communicate over long-lived bidirectionally bound stdio or SSE (Server-Sent Events) pipes.2
+Because browser-based client environments operate within request-response constraints, maintaining persistent, low-level bidirectionally bound socket tunnels securely across multiple users is difficult to scale.2
+Consequently, native stdio or local process execution is unsupported natively.2
+To bridge stdio or SSE-based MCP servers into the platform, organizations must deploy an external OpenAPI proxy called mcpo.2
+The proxy translates stateful, bidirectional stdio or SSE pipes into standard, stateless HTTP endpoints.2
+This translation enables the platform to interact with the target tools as standard web-based API collections.2
+Furthermore, routing connections through an OpenAPI proxy provides enterprise-grade benefits, including central API gateway routing, detailed compliance auditing, rate-limiting policies, and structured credential management.2
+Model Context Protocol Integration Architectural Comparison
+
+
+Integration Dimension
+	Native Streamable HTTP Integration
+	OpenAPI Proxy Integration (mcpo)
+	Supported Transports
+	Restricted exclusively to Streamable HTTP.2
+	Bridges stdio, SSE, and local sub-processes to HTTP.2
+	Authentication Flow
+	Integrated OAuth 2.1 (Dynamic/Static) and Bearer Tokens.2
+	Centrally managed API Key Bearer headers.2
+	Deployment Complexity
+	Low; direct single-hop setup inside the Admin UI.20
+	Moderate; requires running a sidecar container or proxy.2
+	Security Boundaries
+	Gated to administrators; user access is managed via group RBAC.20
+	Standard enterprise network access controls and firewalls.2
+	Multi-Tenant Context
+	Evaluates user identities via dynamic header template tokens.2
+	Handled through upstream proxy translation rules.2
+	Scalability & Resiliency
+	Directly dependent on the individual MCP host capacity.2
+	High; supports connection pooling, caching, and load balancing.2
+	To securely manage authentication and persist user credentials across container restarts, administrators must configure WEBUI_SECRET_KEY.2
+Without this key, the application cannot securely persist and decrypt OAuth tokens when the container restarts.2
+This causes decryption failures, invalidating active integrations and forcing users to repeatedly re-authenticate their accounts.2
+For secure authentication, the platform supports four primary modes: None, Bearer, OAuth 2.1 (Dynamic Client Registration), and OAuth 2.1 Static Credentials.2
+When integrating with corporate identity providers that require manual credential provisioning, OAuth 2.1 (Static) is recommended.2
+During setup, administrators define the target client identifiers, client secrets, and discovery URLs.2
+If the MCP host advertises specific protected resources, the platform captures this metadata and forwards it during the authorization and token refresh steps as the resource parameter, complying with RFC 8707 Resource Indicators and ensuring correct token issuance by strict identity providers.2
+To securely propagate user context and enforce access control at the database layer, the platform supports dynamic headers using predefined template tokens.2
+When configuring an MCP or OpenAPI server connection, administrators can define a JSON headers dictionary.2
+At request time, the backend processes the headers and substitutes the following tokens with the current user's session metadata before forwarding the request 2:
+* {{USER_ID}} is replaced with the calling user's unique identifier.2
+* {{USER_NAME}} is replaced with the user's display name.2
+* {{USER_EMAIL}} is replaced with the user's verified email address.2
+* {{USER_ROLE}} is replaced with the user's role, such as admin or user.2
+* {{CHAT_ID}} is replaced with the active chat identifier, ensuring requests are mapped to the correct conversation context.2
+Any unrecognized tokens are passed as literal text, and non-string values are converted to strings prior to transmission, enabling seamless and secure multi-tenant routing at the backend.2
+Primary Coding Agent Prompting and Workload Handoffs
+This section translates the strategic planning and deep research into highly structured, precise instructions for the primary coding agent. To comply with the operational boundary, actual code generation and script writing are omitted; instead, the logic flows, variable interfaces, and validation boundaries are defined textually to ensure the agent can implement the required modules.
+Workload Handoff 1: In-Process LangGraph Pipe Function
+Target Component Implementation Specification
+Develop an in-process Python Pipe Function class to establish a real-time, stateful connection between the platform's chat interface and a local LangGraph orchestration server, incorporating dynamic token pruning and session mapping.10
+Variable and Parameter Definitions
+* LANGGRAPH_URL: Local host network address string (e.g., HTTP loopback on port 8000).10
+* LANGGRAPH_ASSISTANT_ID: Target agent graph identifier string.2
+* MAX_INFERENCE_TOKENS: Strict VRAM safety threshold integer (configured to 8,000 tokens).2
+* PRUNE_TRIGGER_TOKENS: Active slicing trigger limit integer (configured to 7,000 tokens).2
+* SUMMARIZATION_THRESHOLD: Conversational step count limit integer (configured to 15 messages).2
+* SQLITE_MAPPING_DB: SQLite database connection string pointing to local persistent storage.2
+Deep Logic Flow and Processing Sequences
+1. Session Mapping and Extraction Step: Intercept the incoming request and execute a metadata extraction routine.10 Extract the chat_id and the user profile dictionary from the __user__ and __metadata__ parameters.10 Query the local SQLite database to retrieve the LangGraph thread mapping.10 If no mapping exists, register a new row associating the chat_id with a newly generated thread_id UUID, and issue a REST call to the LangGraph endpoint to compile the remote state graph.10
+2. VRAM Context Pruning Execution Step: Prior to forwarding the transaction payload, retrieve the complete message history from the local state.10 Using an inline tokenizer wrapper, calculate the cumulative token count of all system, user, and assistant entries.2
+   * Condition A (Token Count >= 7,000): Slice the message array from the oldest entries forward.2 Ensure that the system prompt is preserved in the first position, and confirm that matching user-assistant or tool-call message pairs are not broken.2
+   * Condition B (Total Message Count >= 15): Append a virtual execution step routing to a Summarization Node.2 The local inference engine compiles a dense narrative of the oldest 10 messages, commits this summary to the graph's summary key, and emits a list of RemoveMessage objects to permanently purge the raw items from the SQLite checkpointer database.2
+3. Active Message Splicing and Synchronization Step: Intercept user message-deletion or message-editing events.11 Query the SQLite message mapping database using the source message identifier.21 Issue an HTTP request to the LangGraph checkpointer endpoint to truncate the thread history to the parent message identifier, forcing the state graph back into alignment with the local UI history.11
+4. Real-Time Token Streaming Translation Step: Initiate a streaming POST request to the LangGraph thread execution endpoint.10 Using an asynchronous stream reader, intercept the Server-Sent Events (SSE) stream.2 Ignore internal agent chatter and tool execution loops by scanning the metadata header.2 Extract the active text generation chunks from the stream, wrap them in a standard OpenAI-compatible choices delta format, and yield the tokens sequentially to the interface.2
+Critical Edge Cases and Recovery Routes
+* Exception: SQLite Database Locked: Implement an asynchronous retry wrapper with exponential backoff, utilizing a timeout configuration parameter.2
+* Exception: Thread Out of Sync: If LangGraph rejects the state offset because the checkpointer is missing, issue a full reset command, rebuild the historical message chain from the local SQLite history, and recreate the remote thread dynamically.2
+Workload Handoff 2: Interactive HTML Embeds / HITL Event Handler
+Target Component Implementation Specification
+Develop a bidirectional Human-in-the-Loop (HITL) Action Function utilizing the WebSocket event architecture to inject interactive confirmation controls and forms directly into the chat stream, suspending execution until user approval is received.16
+Variable and Parameter Definitions
+* REDIS_BROKER_URL: Cache broker connection string (configured to localhost on port 6379).5
+* WEBSOCKET_EVENT_CALLER_TIMEOUT: Execution wait window integer (defaulting to 300 seconds).2
+* DECISION_VALVE_MODE: Action class selector parameter (configured as either APPROVE or REJECT).2
+Deep Logic Flow and Processing Sequences
+1. State Suspension Node Routing Step: When a backend task requires manual verification (such as an external database write), construct a payload with a unique hitl_request_id.2 Call the __event_emitter__ helper to push a status event containing the approval request text.13
+2. HTML Rich UI Embed Construction Step: Construct a sandboxed HTML structure containing custom CSS and action buttons.2 The HTML must include a client-side JavaScript block that captures button clicks and issues a standardized window.parent.postMessage action payload.16 Call the __event_emitter__ helper with the embeds event type, passing the HTML string in the embeds array with the replace parameter set to true to ensure the widget updates inline without duplication.2
+3. Valkey/Redis Wait State Registration Step: Instantly halt backend execution by calling an asynchronous Redis blocking pop command (BLPOP) against a unique queue key derived from the hitl_request_id.2 The worker thread now enters a non-blocking wait state, suspending execution until a client-side event updates the Redis queue.2
+4. UI Event Capture and Resumption Step: When the operator clicks the "✅ Execute" or "❌ Abort" button in the message toolbar, the active Action Function intercepts the event and extracts the hitl_request_id from the message metadata.15 Open an asynchronous Redis client connection and issue an LPUSH containing the decision payload to the target queue, unblocking the BLPOP wait state and resuming graph execution.2
+Critical Edge Cases and Recovery Routes
+* Exception: WebSocket Disconnection: If the user closes their browser tab during a blocking wait, the event call will fail.2 The system must catch this exception, write a cancellation event to the backend logs, release any locked resources, and revert the transaction safely.2
+* Exception: Execution Timeout: If the blocking Redis wait state exceeds 300 seconds, throw a timeout exception, clear the Redis key, and transition the agent node to a rejected state, notifying the user via a system alert.2
+Workload Handoff 3: Hardened Docker Compose and Zero-Trust Configuration
+Target Component Implementation Specification
+Construct a production-hardened Docker Compose environment file and configuration spec to lock down the local web application ecosystem, enforce strict system boundaries, and prevent unauthorized code execution.1
+Variable and Parameter Definitions
+* WEBUI_SECRET_KEY: Cryptographically strong 32-byte signing key string.1
+* OAUTH_SESSION_TOKEN_ENCRYPTION_KEY: Crypto key string for encrypting user tokens across replicas.6
+* DATABASE_URL: Production database connection string pointing to local PostgreSQL.2
+* REDIS_URL: Cache broker connection string pointing to local Redis.5
+Environment Variable Configuration Schema
+
+
+Target Parameter Name
+	Required Value
+	Intended System Behavior & Hardening Mitigations
+	ENV
+	prod 2
+	Disables the interactive FastAPI Swagger/OpenAPI documentation interface at /docs.2
+	ENABLE_PERSISTENT_CONFIG
+	False 18
+	Forces the system to read configuration from environment variables on boot, preventing database-based configuration drift.18
+	WEBUI_SECRET_KEY
+	Secure_Random_Value 1
+	Secures JWT signatures and encrypts OAuth session tokens consistently across multi-container restarts.1
+	OAUTH_SESSION_TOKEN_ENCRYPTION_KEY
+	Secure_Random_Value 6
+	Prevents token decryption failures during rolling container restarts or replication.6
+	DEFAULT_USER_ROLE
+	pending 2
+	Suspends newly registered accounts until an administrator manually audits and activates them.2
+	CORS_ALLOW_ORIGIN
+	https://fqdn 2
+	Restricts cross-origin resource requests to authorized domains, securing WebSocket connections from CSRF exploits.2
+	ENABLE_PIP_INSTALL_FRONTMATTER_REQUIREMENTS
+	False 2
+	Disables dynamic, unverified package installation via Python tool frontmatter headers, preventing arbitrary package execution.2
+	ENABLE_SIGNUP
+	False 2
+	Disables open registration, allowing user creation only via admin invitation or authenticated SSO provisioning.2
+	ENABLE_OPENAI_API_PASSTHROUGH
+	False 2
+	Prevents users from accessing upstream LLM endpoints using the server's master administrative credentials.2
+	ENABLE_DIRECT_CONNECTIONS
+	False 2
+	Prevents users from adding custom, unmonitored model endpoints and external API keys in their browsers.2
+	WEBUI_SESSION_COOKIE_SECURE
+	True 1
+	Enforces cookie transmission exclusively over encrypted HTTPS channels, protecting session tokens from interception.1
+	WEBUI_SESSION_COOKIE_SAME_SITE
+	strict 1
+	Controls browser cookie behavior to prevent unauthorized cross-site request forgery attempts.1
+	OAUTH_ALLOWED_DOMAINS
+	company_domain 1
+	Restricts SSO logins to a single email domain, preventing unauthorized external access.1
+	ENABLE_PROFILE_IMAGE_URL_FORWARDING
+	False 6
+	Blocks outbound avatar URL redirects, preventing browser client IP addresses and User-Agents from leaking to untrusted hosts.6
+	Deep Logic Flow and Processing Sequences
+1. Strict Environment Initialization Step: Configure the entrypoint script to parse the active configuration environment file on boot.1 Validate that ENABLE_PERSISTENT_CONFIG is set to False.18 If set to True, write an administrative warning log and force-kill the initialization process.17
+2. Secret Key Validation Step: Retrieve the WEBUI_SECRET_KEY parameter.1 Verify that the value is not empty, does not match the default fallback template, and contains at least 32 bytes of entropy.1 If validation fails, halt container initialization to prevent the use of weak, auto-generated keys.1
+3. Process Privilege Separation Step: Configure the Dockerfile to run the application under a non-root system UID/GID.2 Mount the primary data directory using strict 0700 permission masks, and set the host root mount points to read-only.2 Drop unnecessary Linux kernel capabilities using security options to prevent privilege escalation within the container.2
+Critical Edge Cases and Recovery Routes
+* Exception: Container Startup Loop: If the initialization check detects configuration drift or database overrides, the container will fail to start. The entrypoint script must output a structured JSON error explaining the exact validation failure before exiting.1
+Workload Handoff 4: Streamable HTTP MCP Integration with OAuth Static Client
+Target Component Implementation Specification
+Configure a Streamable HTTP Model Context Protocol (MCP) server integration using OAuth 2.1 Static Client credentials, incorporating dynamic user context injection using header template tokens.2
+Variable and Parameter Definitions
+* MCP_SERVER_URL: Target Streamable HTTP MCP server address string.2
+* OAUTH_CLIENT_ID: Pre-registered client identification string.2
+* OAUTH_CLIENT_SECRET: Pre-registered client credentials secret string.2
+* OAUTH_DISCOVERY_URL: Endpoint address string for discovering IdP metadata.2
+* WEBUI_SECRET_KEY: Master system encryption key string.2
+Deep Logic Flow and Processing Sequences
+1. Administrative Registration Step: In the Admin Panel, select External Tools, click the "Add Server" action, and set the Type parameter to MCP (Streamable HTTP).2 Provide the server URL and set the Authentication parameter to OAuth 2.1 (Static).2 Provide the Client ID, Client Secret, and Discovery URL parameters.2
+2. Metadata Discovery and Token Exchange Step: During the client registration handshake, the system must query the Discovery URL to retrieve the target provider's metadata.2 If the provider advertises a protected resource field, capture this value and append it as the resource parameter in subsequent token requests, adhering to RFC 8707 Resource Indicators.2 Once registered, encrypt and save the resulting authorization tokens in the local database using the master WEBUI_SECRET_KEY.2
+3. Interactive Consent Integration Step: Ensure that the static OAuth 2.1 MCP tool is not pre-enabled or set as default on models.2 When a user opens a chat and toggles the tool, intercept the action and redirect the browser to the authorization endpoint to complete the user consent flow.2 Once the redirect completes, save the refreshed session tokens securely.14
+4. Dynamic Context Header Substitution Step: Prior to dispatching an API call to the MCP server, retrieve the configured JSON headers dictionary.2 Scan the dictionary for predefined template tokens and dynamically replace them with the current session metadata 2:
+   * Locate {{USER_ID}} and replace it with the active user's unique ID.2
+   * Locate {{USER_NAME}} and replace it with the user's display name.2
+   * Locate {{USER_EMAIL}} and replace it with the user's verified email address.2
+   * Locate {{USER_ROLE}} and replace it with the user's role (e.g., admin or user).2
+   * Locate {{CHAT_ID}} and replace it with the active chat ID.2
+   * Locate {{MESSAGE_ID}} and replace it with the active message ID.2
+Ensure that any unknown tokens are passed as literal text, and convert all non-string variables to strings before substituting them into the HTTP headers.2
+Critical Edge Cases and Recovery Routes
+* Exception: Token Decryption Failure: If the server fails to decrypt the saved OAuth tokens (throwing an Error decrypting tokens exception after a container restart), verify that the WEBUI_SECRET_KEY is configured correctly.2 If the key has changed, invalidate the active session and prompt the user to re-authenticate.2
+* Exception: Incorrect Connection Type: If an administrator attempts to register an MCP JSON configuration using the OpenAPI type, the interface may crash.2 Implement a validation check on the registration payload; if the config contains key-value parameters matching the MCP specification, block the save action and display a system alert directing the user to use the Streamable HTTP MCP registration interface.2
+Works cited
+1. Hardening Open WebUI, accessed June 7, 2026, https://docs.openwebui.com/getting-started/advanced-topics/hardening/
+2. WebUI blueprints and planning
+3. OpenWebUI Complete Guide: The Full Scope of the Open-Source AI Platform That Elevates Local LLMs to Business-Grade - note, accessed June 7, 2026, https://note.com/snake_dragon/n/n254a25936d00?hl=en-US
+4. Open WebUI integration - Docker Docs, accessed June 7, 2026, https://docs.docker.com/ai/model-runner/openwebui-integration/
+5. Redis Websocket Support - Open WebUI, accessed June 7, 2026, https://docs.openwebui.com/tutorials/integrations/redis/
+6. Scaling Open WebUI, accessed June 7, 2026, https://docs.openwebui.com/getting-started/advanced-topics/scaling/
+7. API Endpoints - Open WebUI, accessed June 7, 2026, https://docs.openwebui.com/reference/api-endpoints/
+8. Open WebUI + Docker Model Runner: Self-Hosted Models, Zero Configuration, accessed June 7, 2026, https://www.docker.com/blog/openwebui-docker-model-runner/
+9. Extensibility - Open WebUI, accessed June 7, 2026, https://docs.openwebui.com/features/extensibility/
+10. From Open WebUI to LangGraph: Building a Human-in-the-Loop Pipe for Real-Time AI Control - Leandro Pessini, accessed June 7, 2026, https://pessini.medium.com/from-open-webui-to-langgraph-building-a-human-in-the-loop-pipe-for-real-time-ai-control-26561cca9f9c
+11. Integrating Remote LangGraph with OI via Function Pipes (with State Persistence) · open-webui open-webui · Discussion #13945 - GitHub, accessed June 7, 2026, https://github.com/open-webui/open-webui/discussions/13945
+12. Filter Function - Open WebUI, accessed June 7, 2026, https://docs.openwebui.com/features/extensibility/plugin/functions/filter/
+13. Events / Open WebUI, accessed June 7, 2026, https://docs.openwebui.com/features/extensibility/plugin/development/events/
+14. Tool Development - Open WebUI, accessed June 7, 2026, https://docs.openwebui.com/features/extensibility/plugin/tools/development/
+15. Action Function: Custom Interactive Buttons - Open WebUI, accessed June 7, 2026, https://docs.openwebui.com/features/extensibility/plugin/functions/action/
+16. Integrate A2UI · open-webui open-webui · Discussion #20235 - GitHub, accessed June 7, 2026, https://github.com/open-webui/open-webui/discussions/20235
+17. Security Policy - Open WebUI, accessed June 7, 2026, https://docs.openwebui.com/security/security-policy/
+18. Environment Variable Configuration - Open WebUI, accessed June 7, 2026, https://docs.openwebui.com/reference/env-configuration/
+19. Notion MCP Integration Guide for Open WebUI | PDF | Databases - Scribd, accessed June 7, 2026, https://www.scribd.com/document/987191607/Openwebui-PDF-Compressed-Part-1
+20. Model Context Protocol (MCP) - Open WebUI, accessed June 7, 2026, https://docs.openwebui.com/features/extensibility/mcp/
+21. Pipe for LangGraph with human-in-the-loop · open-webui open-webui · Discussion #17337, accessed June 7, 2026, https://github.com/open-webui/open-webui/discussions/17337

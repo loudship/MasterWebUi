@@ -1,0 +1,142 @@
+Bug Testing & Validation Framework for the Sovereign AI Agentic Laboratory
+1. Core Infrastructure & Network Topology Validation
+The operational resilience of a sovereign AI laboratory is predicated on the integrity of its "Internal Mesh"—a hardened Docker bridge network that isolates agentic microservices from the host. A critical failure point in these deployments is the Namespace Paradox: within a containerized environment, localhost nomenclature resolves strictly to the internal loopback of the specific container, failing to traverse the bridge to peer services. Incorrect network nomenclature results in catastrophic inter-service communication failure. Validation must ensure all socket bindings utilize internal Docker DNS strings to maintain zero-trust isolation and service discovery.
+1.1 Internal DNS, Namespace Resolution, and the External Gateway Paradox
+Testing must verify that services resolve via the internal mesh while simultaneously validating the gateway override required for external inference. "Success" for cross-boundary communication (e.g., to an Ollama instance or OpenAI API outside the mesh) requires the specific use of the host.docker.internal gateway.
+Service Target
+Protocol/Endpoint
+Validation Metric
+Success Criteria
+Workflow Engine
+http://pipelines:9099
+Service-to-Service Binding
+Successful handshake; bypasses host exposure.
+Auditory Synthesis
+http://kokoro-tts:8880
+Latency & Packet Stream
+Zero-latency synthesis via internal bridge.
+External Inference
+http://host.docker.internal:4321
+Gateway Override
+Successful routing to models outside the mesh.
+Local Quantization
+http://host.docker.internal:11434
+Inference Passthrough
+Resolution of Ollama/vLLM on host gateway.
+1.2 Hypervisor Resource Constraints (.wslconfig)
+Host kernel stability is non-negotiable. To prevent "silent unrecoverable system freezes" under high I/O or vector indexing loads, the .wslconfig file must be validated for the following caps. Furthermore, QA must mandate the use of Docker Named Volumes for all production data. Bind mounts to the Windows NTFS filesystem are strictly prohibited for database storage due to the 9P protocol bridge limitations, which cause spontaneous permission instability and ID translation corruption.
+Memory Cap: memory=48GB (Hard cap to preserve 16GB for Windows kernel/GPU overhead).
+Swap Allocation: swap=0 (Disabled to eliminate disk-bound performance degradation and memory leaks).
+Storage Posture: Verification of Ext4 native backend storage via Named Volumes to ensure POSIX compliance.
+1.3 Port Mapping & Zero-Trust Verification
+A sovereign posture requires that only specific entry points are exposed. Databases containing sensitive telemetry or credentials must remain unmapped.
+Service Category
+Container Name
+Port Mapping
+Posture Requirement
+Orchestrator
+Open WebUI
+8080:8080
+Exposed Gateway
+Automation Hub
+n8n
+5678:5678
+Exposed Gateway
+Data Cache
+Redis-cache
+6379:6379
+Exposed Gateway
+Temporal DB
+Calendar-db (Postgres)
+5432
+Unmapped (Internal Only)
+Agent Memory
+Qdrant
+6333/6334
+Unmapped (Internal Only)
+Reliable data flow through this network layer is the prerequisite for maintaining the integrity of transactional writes during high-frequency agentic operations.
+--------------------------------------------------------------------------------
+2. Persistence Layer & Zero-Downtime Backup Systems
+High-dimensional vector memory and transactional databases are highly volatile in environments characterized by continuous agentic writes. Traditional host-level file copies generate "mathematically disjointed" backups due to Write-Ahead Logging (WAL) and memory caching. Any validation framework for sovereign data must interface directly with native, engine-specific atomic snapshot mechanisms to prevent file system corruption.
+2.1 PostgreSQL MVCC & Binary Dump Integrity
+QA must prioritize Multi-Version Concurrency Control (MVCC) to ensure consistent snapshots without read/write locks.
+Protocol: Execute pg_dump utilizing the -Fc (custom binary) format.
+Success Metric: Restoration speed must outperform text serialization. Restoration testing must confirm the ability to perform selective table recovery, allowing for the extraction of specific Langfuse telemetry logs without a full schema rollback.
+2.2 SQLite "VACUUM INTO" & WAL Mode Consistency
+For embedded databases where transactions are frequently trapped in .wal files, a standard file copy is an immediate failure state.
+Validation Protocol: Invoke the VACUUM INTO command to force a full checkpoint and page-by-page reconstruction.
+Success Metric: The output file must be "mathematically minimal," defragmented, and stripped of empty pages. Verification must confirm the absence of forensic traces from deleted rows.
+2.3 Qdrant Snapshot API & Shard-Level Stability
+Qdrant recovery is prone to "container startup panics" if the Raft consensus metadata is corrupted during restoration.
+Mandatory Protocol: QA mandates shard-level snapshots for high-volume collections to minimize restoration windows.
+Success Metric: Bypassing Raft consensus metadata via the Snapshot API. Restoration is successful only if the HNSW indices map into memory without triggering fatal Raft state exceptions.
+Absolute storage consistency establishes the functional accuracy required for the tools that ingest and process unstructured data.
+--------------------------------------------------------------------------------
+3. Web Extraction & Multimodal Ingestion Engines
+Transforming unstructured web content into "Fit Markdown" is a strategic requirement for minimizing noise in LLM context windows. Validation focuses on state persistence across cryptographic circuits and the preservation of complex document geometries.
+3.1 Crawl4AI JS Execution & Session Persistence
+State Injection: Validation must confirm the use of the on_page_context_created lifecycle hook to inject hydrated session states into the browser context.
+Credential Security: Cookies must be retrieved from an AES-256 encrypted SQLite vault. Success is defined by sequential crawls that maintain authenticated states across JS-heavy SPAs.
+3.2 Docling OCR & Layout Preservation
+Docling must decouple processing from RAG chunking to preserve semantic hierarchies.
+Validation Metric: Use of the DOCLING_SERVE_MAX_SYNC_WAIT=300 parameter to allow for Tesseract OCR rendering of complex, multi-hundred-page PDFs.
+Multimodal Criteria: Verification of ENABLE_OPENAI_IMAGE_URL=True for the conversion of embedded charts into Base64 encodings, enabling vision-language reasoning.
+3.3 Hypervisor Memory & Tor Routing Timeouts
+SHM Verification: Browserless containers must be validated with --shm-size=2g to prevent Chromium crashes during heavy DOM hydration.
+Circuit Resilience: The Browserless/Tor timeout parameter must be set to 60000ms to absorb the high-latency overhead inherent in multi-hop cryptographic routing.
+Ingestion reliability provides the foundation for sovereign generation and the consensus mechanisms governing agentic output.
+--------------------------------------------------------------------------------
+4. Agentic Subsystems & Sovereign Interaction
+The transition to asynchronous, zero-latency microservices eliminates synchronous interface blocking. QA must focus on the zero-trust isolation of credentials and the fluidity of offline auditory synthesis.
+4.1 Kokoro TTS Latency & Schema Validation
+The Auditory subsystem must be validated as a local, OpenAI-compatible RESTful endpoint via the Kokoro-FastAPI wrapper.
+Validation Target
+Requirement
+Success Metric
+API Schema
+OpenAI-Compatible
+Native binding to standard RESTful schemas.
+Synthesis Speed
+GPU-Accelerated
+Zero-latency synthesis with word-level timestamps.
+Voice Mapping
+Weighted Mix
+Selection of af_heart or af_bella from local cache.
+4.2 MCP Tool Actuation & Credential Masking
+Model Context Protocol (MCP) servers for Home Assistant and Calendar must be tested for credential leakage.
+Security Protocol: Verification that Long-Lived Access Tokens and HMAC-based JWTs are isolated within the mesh and masked in all external logs.
+Actuation Guardrails: Tools must restrict agents to status, actuate, and discover functions to prevent infinite hallucination loops.
+4.3 Iframe Sandbox & Same-Origin Access
+To enable AI-generated interactive UIs (e.g., dynamic D3.js networks), the framework must validate the browser-level sandbox bypass.
+Success Criteria: Manual activation of the allowSameOrigin parameter. This is the only valid path to enable bidirectional postMessage communication between the agent-generated UI and the parent DOM.
+Individual service stability eventually converges into the collective integrity of the multi-agent decision-making process.
+--------------------------------------------------------------------------------
+5. Deliberative Consensus & Operational Integrity
+In high-stakes sovereign applications, the laboratory prioritizes "Unanimous Consensus." This protocol operates on the principle that "Failure to Agree is Agreement to Defer," ensuring deterministic finality only upon full alignment.
+5.1 Consensus Accuracy vs. Model Parameterization
+Validation requires testing against GSM8k and DeliData datasets to verify reasoning convergence.
+Success Metric: 70B parameter models must demonstrate a linear increase in accuracy across 3 reflection rounds.
+Mathematical Verification: Accuracy is determined by the Agreement Level (A(Pok)):
+A(Pok)= 
+∣h∣
+∑ 
+i∈h
+​
+ 1(Pok∈AC 
+i
+r
+​
+ )
+​
+ 
+Where a policy (Pok) is only accepted if A(Pok)≥θ (the confidence threshold).
+5.2 3-2-1-1-0 Strategy & Bit-Rot Protection
+Sovereign intelligence nodes must utilize a 3-2-1-1-0 backup strategy, requiring one copy to be strictly air-gapped with zero verified errors.
+Integrity Protocol: Generation of SHA-256 checksums for monolithic Zstandard archives.
+Error Correction: Validation of Reed-Solomon erasure coding with a 5-10% parity generation requirement. Parity files must be able to mathematically reconstruct corrupted data blocks in cold storage.
+5.3 gVisor Sandboxing & Resource Enforcement
+Code execution must be strictly isolated from the host kernel using guest kernel emulation.
+Environment Validation: The variable CODE_EVAL_VALVE_OVERRIDE_REQUIRE_RESOURCE_LIMITING=True must be enforced.
+Defensive Metric: Implementation of "Deterministic Timeout Loops" to ensure any hallucinated infinite loop results in a graceful container-level crash rather than host-level resource exhaustion.
+Concluding Finality
+These bug-testing protocols transform a volatile laboratory into a mathematically verifiable sovereign intelligence node. By intertwining atomic snapshot mechanics, 3-2-1-1-0 bit-rot protection, and deliberative consensus frameworks, the system achieves a state of deterministic permanence, independent of external dependencies

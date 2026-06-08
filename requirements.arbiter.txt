@@ -1,0 +1,4 @@
+aiohttp==3.9.5
+pytest
+pytest-asyncio
+aioresponses

@@ -1,0 +1,65 @@
+# =============================================================================
+# Dockerfile.arbiter
+# Ghost Command Offline Ecosystem — VRAM Arbiter Daemon
+# =============================================================================
+#
+# Builds a minimal Python 3.11-slim image that runs vram_arbiter_daemon.py
+# as a supervised, non-blocking asyncio background process.
+#
+# The image is intentionally stripped of unnecessary packages to minimise
+# the attack surface on an air-gapped AMD Ryzen 9 9950X host.
+#
+# Build:
+#   docker build -f Dockerfile.arbiter -t vram-arbiter:latest .
+#
+# Run (standalone, targeting the host LM Studio instance):
+#   docker run --rm --network host \
+#     -e LM_STUDIO_API=http://localhost:1234/v1/models \
+#     -e VRAM_CEILING=12240537395 \
+#     vram-arbiter:latest
+# =============================================================================
+
+FROM python:3.11-slim AS base
+
+# ---------------------------------------------------------------------------
+# System dependencies — only what aiohttp needs for its C-extensions
+# ---------------------------------------------------------------------------
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      gcc \
+      libffi-dev \
+ && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# Python dependencies
+# ---------------------------------------------------------------------------
+WORKDIR /app
+
+# Copy only the requirements file first to exploit layer caching
+COPY requirements.arbiter.txt ./requirements.arbiter.txt
+RUN pip install --no-cache-dir -r requirements.arbiter.txt
+
+# ---------------------------------------------------------------------------
+# Application source
+# ---------------------------------------------------------------------------
+COPY vram_arbiter_daemon.py ./vram_arbiter_daemon.py
+
+# ---------------------------------------------------------------------------
+# Runtime configuration
+# ---------------------------------------------------------------------------
+
+# Default environment variables (all overridable at docker run / compose)
+ENV LM_STUDIO_API="http://host.docker.internal:4321/v1/models" \
+    VRAM_CEILING="12240537395" \
+    VRAM_PER_MODEL_ESTIMATE_GB="5" \
+    PYTHONUNBUFFERED="1" \
+    PYTHONDONTWRITEBYTECODE="1"
+
+# Non-root user for reduced privilege surface
+RUN addgroup --system arbiter && adduser --system --ingroup arbiter arbiter
+USER arbiter
+
+# ---------------------------------------------------------------------------
+# Entrypoint: asyncio.run() drives the 1000 ms non-blocking poll loop
+# ---------------------------------------------------------------------------
+ENTRYPOINT ["python", "-u", "vram_arbiter_daemon.py"]

@@ -1,0 +1,164 @@
+﻿Master Build Mission: Gigascrape Deep-Web Research Agent Architecture
+Strategic Overview and the Discovery-First Doctrine
+The transition from a passive local inference workspace into an autonomous, high-performance research ecosystem requires a fundamental rearchitecting of tool integration, context management, and data ingestion pipelines. The deployment of "Gigascrape"—a specialized, discovery-first research agent functioning within the Open WebUI environment—mandates an absolute departure from traditional conversational artificial intelligence paradigms. Rather than relying on the generative synthesis of highly saturated, mainstream training data, Gigascrape is architected to operate as a precise, extraction-centric orchestrator. Its primary operational directive is the systematic identification, retrieval, and structural organization of obscure, deep-web URLs and raw metadata matrices. By strictly decoupling the discovery phase from the generative phase, this architecture minimizes algorithmic hallucination and prioritizes empirical data acquisition.1
+The target ecosystem is a fully offline, locally hosted environment powered by a high-capacity hardware profile, specifically utilizing an AMD Ryzen 9 9950X processor, an NVIDIA RTX 5070 graphics processing unit, and 64GB of system RAM. This specific hardware configuration permits the simultaneous execution of massive context-window inferences, heavy-duty headless browser rendering, and dense vectorized memory operations without relying on external ingress or egress networks.1 To effectively leverage this hardware, the underlying architecture must utilize a zero-trust Directed Acyclic Graph (DAG) container deployment strategy. This approach physically and logically isolates the inference layer from the scraping engines, utilizing strict memory allocations and kernel-level sandboxing to prevent system compromise.1
+The following blueprint serves as the definitive, deterministic logic roadmap for the primary coding agent (designated as Antigravity). It dictates the structural boundaries, required data flows, and subsystem configurations necessary to assemble a production-ready agent. The instructions within this document encompass the entirety of the project lifecycle, from initial architectural planning and deep research into subsystem dependencies, to the precise formulation of the workload handoff required to generate flawless, executable deployment syntax.
+Phase 1: Planning and Ecosystem Architecture
+The foundational architecture of the Gigascrape ecosystem depends on a containerized microservice topology. The deployment relies on orchestrating discrete components across a localized Docker bridge network, ensuring that the frontend presentation layer, the Python backend inference engine, and the headless browser utilities interact via secure, predictable internal routing.1
+Hardware Utilization and Compute Partitioning
+To maximize the utilization of the Ryzen 9 9950X and the RTX 5070, the system must logically partition compute responsibilities. The local Large Language Model (LLM), which orchestrates the logic flow, formulates search queries, and evaluates data relevance, resides exclusively within the RTX 5070's Video Random Access Memory (VRAM). Given the limitations of VRAM context windows when processing massive raw document strings, the system must optimize the Key-Value (KV) cache. Setting parameters such as RAG_SYSTEM_CONTEXT=True locks all persistent memories and scraped content strictly into the system prompt, allowing the local model to utilize KV prefix caching for near-instant responses during multi-step inference loops.1
+Conversely, the high-throughput Document Object Model (DOM) parsing, headless Chromium rendering, and metadata aggregation are offloaded to the Ryzen processor and the 64GB of system RAM via dedicated Docker containers. The 16 cores and 32 threads of the Ryzen 9950X are specifically suited for the asynchronous execution of Python event loops, allowing the system to maintain dozens of concurrent headless browser sessions without saturating the primary inference pipeline.
+Zero-Trust Isolation and Container Networking
+A critical limitation of traditional scraping environments is the vulnerability of the host operating system to malicious payloads embedded within scraped DOMs or arbitrary Python executions.1 The Gigascrape architecture mandates absolute network isolation. No retrieved data may directly execute within the primary backend container without mathematical sanitization.1
+The system structure requires a precise sequence of container interactions. The text-based architecture diagram below illustrates the required data flows and port mappings that must be targeted when constructing the tool integration logic:
+|-- Hardware: AMD Ryzen 9 9950X / NVIDIA RTX 5070 / 64GB DDR5 RAM
+|-- Virtualization Layer: Docker Engine with cgroups v2 enabled
+| |-- Microservice 1: Open WebUI (Frontend + Backend) 2 | |-- Port: 3000 (SvelteKit UI) / 8080 (FastAPI Backend) | |-- Compute Allocation: RTX 5070 (LLM Inference via local models) | |-- Protocol: Event Emitter Bridge / WebSockets / MCP Interfacing | |-- Microservice 2: SearXNG (Meta-Search Aggregator) 3 | |-- Port: 8080 (Internal Network Only) | |-- Compute Allocation: CPU Bound (Ryzen 9950X) | |-- Configuration: Filtered YAML manifest bypassing mainstream indexes | |-- Microservice 3: Crawl4AI Proxy (Asynchronous Web Crawler) 1 | |-- Port: 8000 (Internal API) | |-- Compute Allocation: High RAM Allocation (DOM Matrix Rendering) | |-- Environment: shm_size=1g (Mandatory for Chromium crash prevention) 1 | |-- Microservice 4: Docling Serve (Vision/Layout Extraction) 1 | |-- Port: 5001 (Internal Network Only) | |-- Configuration: UVICORN_WORKERS=1, DOCLING_SERVE_MAX_SYNC_WAIT=300
+The coding agent is instructed to write tool logic that routes all search queries strictly through the internal SearXNG endpoint, followed by routing all target URLs through the Crawl4AI internal proxy endpoint.1 By establishing this topological constraint, the agent prevents external API dependencies, guarantees 100% offline functionality, and ensures that the Model Context Protocol (MCP)—an open standard allowing LLMs to interact with external data and tools—is utilized securely within a sandboxed environment.6
+Phase 2: Deep Research and Subsystem Configuration
+The efficacy of Gigascrape depends entirely on the precision of its underlying sub-modules. Standard web searches return highly indexed, commercially optimized results, completely defeating the purpose of a deep-web discovery agent. To counteract this, aggressive filtering algorithms and highly specialized crawler configurations must be implemented at the container level.3
+SearXNG Configuration for Mainstream Evasion
+SearXNG functions as the primary compass for Gigascrape, acting as a metadata aggregator.1 However, its default state queries major engines like Google, Bing, and Yahoo. These engines populate the RAG context with SEO-optimized noise, triggering hallucinations and distracting the LLM from high-value, un-indexed source material.1 The deployment architecture requires a heavily modified SearXNG deployment, specifically leveraging the keep_only or remove directives within the YAML configuration.3
+The data structures for the search engine configurations must follow strict categorization. The configuration matrix below details the necessary directives:
+
+
+Engine Classification
+	Configuration Directive
+	Target Engines
+	Strategic Rationale
+	Mainstream Aggregators
+	remove / Disable
+	Google, Bing, Yahoo 3
+	Prevents context window poisoning and commercial SEO bias, forcing the LLM to process raw data.1
+	Deep-Web / Niche Data
+	keep_only / Enable
+	Arch Linux Wiki, Wikidata, Marginalia, Crossref, Semantic Scholar 4
+	Forces the search matrix to source academic, raw, and un-indexed plain-text networks.9
+	Network Protocols
+	Enforced Overrides
+	timeout: 30.0, enable_http2: false, retry_on_http_error: true 8
+	Extends wait times for heavily obfuscated domains that utilize complex anti-bot measures or slow server response times.8
+	The tool logic must strictly format the API payload sent to the internal SearXNG container to enforce these parameters, completely preventing the LLM from inadvertently overriding the search constraints and accessing mainstream data streams. The configuration avoids AI summaries provided by default metadata engines, ensuring only raw URLs, definitions, and titles are returned to the orchestration layer.3
+Crawl4AI Integration for Headless DOM Parsing
+Standard HTTP GET requests (such as those executed by native Python libraries) fail to retrieve deep-web content due to the proliferation of Cloudflare blocks, aggressive JavaScript rendering requirements, and robust anti-bot heuristics.1 To bypass these barriers, Gigascrape relies on Crawl4AI as its asynchronous headless extraction engine. Operating entirely within the Docker bridge network, Crawl4AI launches a headless Chromium instance via Playwright to simulate human interactions, wait for asynchronous DOM payloads to load, and extract the resulting layout into clean Markdown or JSON arrays.1
+The URL processing logic must be constructed using the AsyncWebCrawler framework. To optimize the extraction for discovery rather than verbose generation, precise BrowserConfig and CrawlerRunConfig parameters are required.12
+The logical handling for Crawl4AI payload generation must incorporate the following strategies:
+1. Session Management and Isolation: The crawler must instantiate a unique session ID for each domain cluster to prevent cross-contamination of cache memory and maintain distinct cookie jars for different targets.12
+2. Anti-Bot Evasion via JavaScript Injection: Deep-web forums and obscure archives often require simulated interaction. JavaScript payloads must be injected using the js_code_before_wait and wait_for parameters.14 Conditional statements must be formulated to inject click actions (e.g., executing DOM queries to accept cookie overlays or triggering lazy-load pagination elements) before initiating the markdown extraction sequence.14
+3. Cache Bypassing: To guarantee the freshest discovery of obscure content, the tool logic must explicitly enforce cache_mode=CacheMode.BYPASS on all initial exploratory sweeps, ensuring the headless browser retrieves live data rather than accessing localized caches.12
+4. Markdown Generation Strategies: The PruningContentFilter must be implemented within the tool logic to aggressively strip navbars, footers, and redundant DOM noise. This isolates only the core textual data or hyperlinked metadata matrices required for the discovery loop, effectively removing bloat from the LLM's context window.13
+Integrating these parameters guarantees that the data returned to the LLM context window is mathematically dense, structurally organized, and free of the token-bloat associated with raw HTML strings.7
+Golden RAG Synchronization
+To manage the dense Markdown data generated by Crawl4AI, the system's vectorization algorithms must be highly tuned. The configuration file must be updated to align with Golden RAG guidelines.1 Traditional semantic chunking can shatter the narrative flow of documents, destroying analytical synthesis.1 By configuring the local embeddings to utilize a Chunk Size of 1000 and a Chunk Overlap of 100, while limiting the retrieval to the Top K of 3, the vector database maintains strict contextual boundaries.1 This prevents massive documents from overflowing the context window during retrieval, ensuring the inference engine only processes the highest-relevance extraction nodes.
+Phase 3: The Discovery-First Core Logic
+The distinguishing characteristic of the Gigascrape architecture is its operational logic. Conventional LLM usage patterns involve sending a prompt and receiving a generated essay. Gigascrape must actively resist this pattern.1 The system prompts and internal logic loops must be strictly formulated to output raw JSON arrays of discovered URLs, tabular metadata, and chronological event logs, aggressively pruning all conversational filler.
+The Operational Discovery Loop
+The logic must dictate a multi-step operational loop that isolates the scraping function from the generation function. When a user requests research on a specific topic, the system traverses a highly structured graph:
+1. Semantic Decomposition: The initial prompt is ingested, and the local LLM strips the request down to core semantic tokens, discarding conversational context to formulate raw search vectors.
+2. Proxy Aggregation: The tool executes an internal call to the SearXNG proxy, requesting a predefined maximum number of URLs from the non-mainstream engines configured in the environment.1
+3. Algorithmic Triage: Instead of presenting these URLs to the user, the agent logic automatically filters the list in the background, dropping domains with poor reputation scores or irrelevant top-level domains based on the semantic tokens.
+4. Headless Penetration: The refined list of URLs is passed sequentially to the Crawl4AI proxy. The asynchronous web crawler renders the pages, executes injected JavaScript to bypass bot protection, and returns the pruned Markdown payloads.5
+5. Data Extraction: The LLM processes the Markdown payloads strictly to identify further deep-linked URLs or explicit data nodes, treating the text solely as a map rather than a narrative source.
+Mitigating Infinite Retry Loops in Open WebUI Pipelines
+A critical architectural consideration for pipeline development in Open WebUI is the mitigation of infinite retry loops. If the pipeline runs its own tools internally (as Gigascrape does), the logic must strictly dictate that the backend does not emit delta.tool_calls to the frontend.1
+Emitting a tool call object when the tool has already been executed internally forces the Open WebUI middleware to attempt to execute it again. Because the pipeline will continuously emit the exact same call on every retry, the system will stack copies of the response on top of each other before hitting the maximum retry cap limit, causing catastrophic context window failure.1
+Instead of native tool calls, the pipeline must yield a details_block directly as a string or nested inside a delta.content chunk. This method visually represents the tool execution in the user interface—rendering a "Called" chip with an expandable arguments and results view—without triggering the internal middleware tool handler.1
+Event Emitter Framework and Asynchronous UX
+Integrating external sub-systems into Open WebUI requires sophisticated state management. Gigascrape cannot operate as a silent, monolithic process; long-running headless browser crawls will trigger timeout errors or create a poor user experience if the system appears unresponsive.1 The architecture mandates the use of Open WebUI's native event emitter framework to pipe real-time execution statuses back to the SvelteKit frontend.2
+The system architecture distinguishes between __event_emitter__ (used for fire-and-forget, one-way status messages) and __event_call__ (used for bidirectional communication requiring user input).16 For Gigascrape, the continuous status stream relies on the __event_emitter__ helper.16
+The logical structure of the emitted events must follow this precise schema:
+
+
+Execution Stage
+	Event Payload Structure
+	UI Rendering Result
+	Initialization
+	{"type": "status", "data": {"description": "Initializing SearXNG...", "done": False, "hidden": False}}
+	Renders an animated loading spinner and descriptive text above the active chat interface.17
+	Mid-Crawl Operation
+	{"type": "status", "data": {"description": "Crawling URL 1 of 5 via Chromium", "done": False, "hidden": False}}
+	Updates the active status indicator dynamically without replacing the underlying message stream.17
+	Error Interception
+	{"type": "status", "data": {"description": "Timeout: URL 2 unreachable. Proceeding.", "done": False}}
+	Informs the user of gracefully handled exceptions without terminating the entire pipeline run.17
+	Finalization
+	{"type": "status", "data": {"description": "", "done": True, "hidden": False}}
+	Terminates the animation, clears the status text, and finalizes the tool execution block presentation.17
+	By implementing this event-driven architecture, the system ensures that complex, multi-minute scraping tasks do not trigger SvelteKit interface timeouts or prompt the user to abruptly refresh the page, which would sever the backend logic execution path.1
+Phase 4: Persistent Refinement Protocol and State Management
+To penetrate the deep web effectively, a single search query is rarely sufficient. The architecture demands a Persistent Refinement Protocol—a feedback loop enabling the agent to systematically narrow its scope over extended timeframes.
+Deliberative Consensus Protocol
+The reflection phase of Gigascrape utilizes a deliberative consensus protocol to refine searches. The orchestrator nodes undergo an upgrade to implement a three-round deliberation process consisting of Initial, Reflection, and Conclusion phases.1
+The logic matrix compares the semantic density of the crawled Markdown against the initial user intent. If the extracted data fails to meet a predetermined relevance threshold, the system simulates a gossip network divided into two phases: hash broadcasting and gossip payload propagation.1 The logic extracts keywords from the failed search, cross-references them against the localized vocabulary index, and dynamically formulates a secondary, highly specific query string. This query is automatically fed back into the SearXNG proxy, creating a continuous loop of discovery, extraction, evaluation, and refinement.
+LangGraph Integration for Remote State Threading
+Deep-web discovery operations often span multiple queries, requiring the preservation of state and context across isolated threads.1 Standard memory management via localized SQLite databases suffers from limitations when mapping complex, multi-day operations.
+To handle persistent state across complex orchestrations, the deployment architecture requires the logic to utilize remote LangGraph threading principles via custom Open WebUI Function Pipes.1 By acting as a smart intermediary, the pipeline connects to the LangGraph Server URL (LANGGRAPH_URL).1 When a new task initializes, the integration automatically provisions a dedicated thread_id.1
+By relying on LangGraph's thread API, the script persistently stores and manages the full conversation history and traversal state directly on the remote instance. If the user edits a previously sent message, the logic detects the change and synchronizes the state on the remote thread. Furthermore, because LangGraph tasks run for extended periods, the script avoids timeout issues by initiating runs asynchronously and continuously polling the status until completion.1 If a search spans multiple days, the tool can query the thread_id to recall the exact branches of the deep web it has already explored, completely eliminating redundant crawling operations and preserving true state persistence.1
+Native Memory Space Governance
+For immediate, localized continuity across isolated threads, Open WebUI's native Agentic Memory must be employed. The system uses five system-level functions (add_memory, search_memories, replace_memory_content, delete_memory, list_memories) to govern a dedicated SQLite vector space.1 The coding agent must integrate these functions into the tool logic, ensuring the agent stores successful high-value URLs in the vector space, allowing it to continuously learn the user's preferred niche targets and access those domains directly in future sessions without initiating a new SearXNG sweep.
+Phase 5: Continuous Expansion and Architectural Upgrades
+To ensure the persistent evolution of the local offline AI ecosystem, the architectural foundations of Gigascrape account for immediate scalability and advanced analytical capabilities. By integrating cutting-edge layout extraction frameworks and host-level execution sandboxes, the system transcends standard text analysis and operates as a fully autonomous agent.1
+Advanced Vision and Layout Extraction Processing
+Current native text splitters (such as PyPDF or Apache Tika) strip text blindly. This destroys table formatting, hierarchical document structures, and embedded images, creating catastrophic analytical failures in visual document reasoning, especially when processing academic PDFs or highly structured financial disclosures discovered on the deep web.1
+To upgrade the analytical capability, the architecture must integrate the Docling microservice. Docling is a vision-language parsing engine deployed as a dedicated container (quay.io/docling-project/docling-serve:latest).1 The container configuration requires specific parameters to maintain stability: setting UVICORN_WORKERS=1 prevents internal task state loss and race conditions during heavy OCR tasks, while DOCLING_SERVE_MAX_SYNC_WAIT=300 ensures timeouts do not trigger during massive document processing.1
+Deploying Docling introduces advanced DOM matrix awareness. By configuring the Open WebUI parameters CONTENT_EXTRACTION_ENGINE=docling and establishing a bridge to port 5001 (DOCLING_ENGINE_URL=http://docling-serve:5001), the system can process complex documents.1 Furthermore, enabling ENABLE_OPENAI_IMAGE_URL=True forces the backend to append base64 encoded images of the document structure alongside the metadata directly to the document stream.1 This grants multimodal models (such as LLaVA) deep spatial and structural awareness of embedded charts, expanding the discovery-first doctrine from purely textual extraction to comprehensive spatial intelligence.
+Chronological Video Narrative Extraction
+A significant portion of deep-web tutorials and complex technical guides exist as unindexed video formats. Standard RAG semantic chunking shatters the chronological narrative of video files, destroying tutorial synthesis.1 Furthermore, video platforms aggressively block cloud or scraper IPs.
+To resolve this, the system integrates a chronological ingestion pipeline via the langchain-yt-dlp and youtube_transcript_api libraries. This tool bypasses vectorization entirely, extracting full transcripts directly into the primary context window.1 Because this script runs as an Open WebUI native tool inside the container, the architecture dictates a dependency injection protocol. Dependencies must be manually installed with root privileges using docker exec -u 0 <container> pip install langchain-yt-dlp youtube_transcript_api to prevent fatal runtime import crashes and ensure the environment is pre-configured.1
+Kernel-Level Sandboxing for Autonomous Code Execution
+As Gigascrape scales, the next logical evolution is the implementation of an autonomous Code Interpreter, allowing the agent to write and execute its own Python scripts to parse highly obfuscated, non-standard data types discovered during its deep-web sweeps. However, granting an LLM Code Interpreter capabilities to run arbitrary Python or Bash code directly inside standard containers presents severe, existential vulnerabilities.1 Malicious scraped code or hallucinated prompts can exfiltrate keys, corrupt filesystems, or pivot to compromise the host OS.1
+Future iterations of the architecture mandate absolute execution isolation via Google's user-space kernel gVisor (runsc). The integration of gVisor intercepts and filters all system calls. This relies on Control Groups (cgroups v2) on the host to mathematically limit memory, CPU allocation, and file generation, preventing DoS attacks or recursive fork bombs.1
+Since standard Docker containers lack permissions to manage nested cgroups, operator capability escalation must be mapped in the deployment manifest. This requires bypassing standard seccomp or apparmor profiles and mapping the host /sys/fs/cgroup directly into the environment.1 Omitting this step leads to fatal runtime errors. By properly implementing these security parameters (Valves), the Code Interpreter toolkit can safely run Python scripts and capture STDOUT back into its context, completely sandboxing the compute envelope and protecting the host hardware.1
+Sovereign Backup Protocol
+To protect the localized vector databases, SQLite memory matrices, and custom Python tool scripts, the host system must utilize a sovereign backup upgrade. The backup Command Line Interface (CLI) on the host is designed to utilize multi-threaded zstd compression, drastically reducing archive size and execution time. If the host system lacks the zstd binary, the architecture ensures a transparent fallback to standard tar.gz compression, maintaining continuous operational security without manual intervention.1
+Phase 6: Workload Handoff and Deployment Directives
+The following structural specifications form the direct instructional parameters for the primary coding agent (Antigravity). The coding agent must translate these logic flows, variable constraints, and boundary conditions into flawless executable code, completely avoiding standalone pipeline implementations unless bridging to an external LangGraph server.1
+Automated Setup Scripts and Deployment Manifests
+To ensure out-of-the-box functionality, the coding agent must construct automated deployment manifests.
+Required Logic Boundaries:
+* The script must formulate a unified docker-compose.yml manifest that merges the service definitions for crawl4ai-proxy, crawl4ai, searxng, and docling-serve into a single local bridge network.1
+* The setup script must enforce staggered initialization: deploying backend services first (crawl4ai, docling-serve), imposing a 15-second initialization wait, and then booting the open-webui frontend container to ingest variables without triggering SQLite lock conflicts.1
+* The setup bash script (dev.sh) must execute the necessary root-level pip installations for external dependencies (e.g., langchain-yt-dlp) inside the newly spun-up Open WebUI container automatically.1
+* The script must perform programmatic validation, asserting that inter-container routing is operational by executing curl checks on internal port endpoints and verifying effective capabilities on /proc/self/status.1
+SearXNG and Crawl4AI Syntax Handoff
+The Python structures necessary to format requests to the internal SearXNG and Crawl4AI servers must be fault-tolerant.
+Required Logic Boundaries:
+* The logic must formulate a SearXNG payload utilizing the q (query) parameter, combined with strict engines parameters that correspond to the non-mainstream aggregators. The agent must parse the JSON response, specifically isolating the url, title, and content keys.4
+* The Crawl4AI logic must instantiate asynchronous calls utilizing asyncio.gather for parallel URL processing, constrained by a semaphore lock to prevent host system memory exhaustion.1
+* The code must construct a custom CrawlerRunConfig containing cache_mode=BYPASS, word_count_threshold=50, and a robust js_code_before_wait payload designed to interact with complex DOM elements prior to markdown extraction.12
+* Edge Case Handling: The coding agent must intercept Playwright browser crash exceptions (often caused by exceeding the memory limit on massive DOM arrays).1 Upon interception, the logic must flag the specific URL as un-crawlable, emit an error payload status update via the __event_emitter__ to the UI, and automatically proceed to the next URL in the queue rather than crashing the primary inference loop.16
+Tool Valves and Open WebUI Registration
+Gigascrape cannot rely on hardcoded API keys or local endpoint strings.1 The coding agent must utilize the Open WebUI Valves framework to expose all configurable parameters directly to the administration panel via the gear cogs located in the Workspace Tools menu.1
+Required Logic Boundaries:
+* The agent must design a Pydantic BaseModel class named Valves containing all necessary environmental variables.24
+* The model must include string fields for searxng_endpoint_url and crawl4ai_endpoint_url.
+* The model must include integer fields for max_search_depth and crawler_timeout_seconds.
+* The model must utilize the Field parameter to mask sensitive inputs, implementing password-type fields (rendering dots instead of characters) for any authentication tokens or Home Assistant connections (ha_token) to ensure zero-trust compliance.1
+* Edge Case Handling: The tool logic must run an initialization check (__init__) that verifies the presence of these Valve configurations. If the values are null, the logic must immediately halt execution and yield an informative error message to the Open WebUI interface detailing the missing parameters, requiring manual administrator verification.1
+The implementation of these precise boundaries ensures that Gigascrape establishes a discovery-first operational standard, drastically minimizing LLM hallucination and setting the foundation for fully autonomous, localized deep-web research systems.
+Works cited
+1. WebUI blueprints and planning
+2. Developing Open WebUI, accessed June 7, 2026, https://docs.openwebui.com/getting-started/advanced-topics/development/
+3. ai-summary free search engines? : r/degoogle - Reddit, accessed June 7, 2026, https://www.reddit.com/r/degoogle/comments/1tvvotv/aisummary_free_search_engines/
+4. settings.yml - SearXNG Documentation (2026.6.5+26fa181b8), accessed June 7, 2026, https://docs.searxng.org/admin/settings/settings.html
+5. Crawl4AI Tutorial: How to Build AI-Ready Web Crawlers in Python - Scrapfly Blog, accessed June 7, 2026, https://scrapfly.io/blog/posts/crawl4AI-explained
+6. Tools - Open WebUI, accessed June 7, 2026, https://docs.openwebui.com/features/extensibility/plugin/tools/
+7. Home - Crawl4AI Documentation (v0.8.x), accessed June 7, 2026, https://docs.crawl4ai.com/
+8. engines: - SearXNG Documentation (2026.6.5+26fa181b8), accessed June 7, 2026, https://docs.searxng.org/admin/settings/settings_engines.html
+9. Engine Library - SearXNG Documentation (2026.6.4+e6559c9ad), accessed June 7, 2026, https://docs.searxng.org/dev/engines/enginelib.html
+10. Frustration with major engines · searxng searxng · Discussion #5651 - GitHub, accessed June 7, 2026, https://github.com/searxng/searxng/discussions/5651
+11. Crawl4AI: Open-source LLM Friendly Web Crawler & Scraper. - GitHub, accessed June 7, 2026, https://github.com/unclecode/crawl4AI
+12. AsyncWebCrawler - Crawl4AI Documentation (v0.8.x), accessed June 7, 2026, https://docs.crawl4ai.com/api/async-webcrawler/
+13. Quick Start - Crawl4AI Documentation (v0.8.x), accessed June 7, 2026, https://docs.crawl4ai.com/core/quickstart/
+14. Page Interaction - Crawl4AI Documentation (v0.8.x), accessed June 7, 2026, https://docs.crawl4ai.com/core/page-interaction/
+15. [Bug]: Injected JavaScript Not Executed Properly by Crawler · Issue #1128 · unclecode/crawl4ai - GitHub, accessed June 7, 2026, https://github.com/unclecode/crawl4ai/issues/1128
+16. Events / Open WebUI, accessed June 7, 2026, https://docs.openwebui.com/features/extensibility/plugin/development/events/
+17. feat: Enable SSE generated event_emitter status events to update the built in status area for agentic servers #19254 - GitHub, accessed June 7, 2026, https://github.com/open-webui/open-webui/discussions/19254
+18. Action Function: Custom Interactive Buttons - Open WebUI, accessed June 7, 2026, https://docs.openwebui.com/features/extensibility/plugin/functions/action/
+19. Does the Pipelines container have any integration for Event emitters and similar? - Reddit, accessed June 7, 2026, https://www.reddit.com/r/OpenWebUI/comments/1o23wss/does_the_pipelines_container_have_any_integration/
+20. Enh: Add support for Event Emitters · Issue #225 · open-webui/pipelines - GitHub, accessed June 7, 2026, https://github.com/open-webui/pipelines/issues/225
+21. Pipe Function: Create Custom "Agents/Models" - Open WebUI, accessed June 7, 2026, https://docs.openwebui.com/features/extensibility/plugin/functions/pipe/
+22. Functions - Open WebUI, accessed June 7, 2026, https://docs.openwebui.com/features/extensibility/plugin/functions/
+23. openwebui_tool_valves | Resources | docktape/openwebui - Terraform Registry, accessed June 7, 2026, https://registry.terraform.io/providers/docktape/openwebui/latest/docs/resources/tool_valves
+24. Valves - Open WebUI, accessed June 7, 2026, https://docs.openwebui.com/features/extensibility/plugin/development/valves/
+25. Valves - Open WebUI, accessed June 7, 2026, https://docs.openwebui.com/features/extensibility/pipelines/valves/

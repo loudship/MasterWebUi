@@ -1,0 +1,16 @@
+{
+    "type": "mcp_http",
+    "url": "http://deep-web-mcp:8000/mcp",
+    "auth_type": "oauth2_static",
+    "client_id": "openwebui_static_client",
+    "client_secret": "secure_static_secret_123",
+    "discovery_url": "https://auth.local.company.com/.well-known/openid-configuration",
+    "headers": {
+        "X-Tenant-User-Id": "{{USER_ID}}",
+        "X-Tenant-User-Name": "{{USER_NAME}}",
+        "X-Tenant-User-Email": "{{USER_EMAIL}}",
+        "X-Tenant-User-Role": "{{USER_ROLE}}",
+        "X-Tenant-Chat-Id": "{{CHAT_ID}}",
+        "X-Tenant-Message-Id": "{{MESSAGE_ID}}"
+    }
+}

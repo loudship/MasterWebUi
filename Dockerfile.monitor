@@ -1,0 +1,89 @@
+# =============================================================================
+# Dockerfile.monitor
+# Ghost Command Offline Ecosystem — CPU Monitor Daemon
+# =============================================================================
+#
+# Builds a Python 3.11-slim image that runs monitor_daemon.py as a FastAPI
+# service on port 9000.
+#
+# Design constraints
+# ------------------
+#   - No CUDA / GPU runtime installed — device="cpu" is enforced in code.
+#   - sentence-transformers downloads all-MiniLM-L6-v2 to the local model
+#     cache on first boot (or from a pre-baked volume).
+#   - CPU thread count is tunable via CPU_THREADS env var (default 4).
+#
+# Build:
+#   docker build -f Dockerfile.monitor -t monitor-daemon:latest .
+# =============================================================================
+
+FROM python:3.11-slim AS base
+
+# ---------------------------------------------------------------------------
+# System dependencies
+# ---------------------------------------------------------------------------
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      gcc \
+      libffi-dev \
+      curl \
+ && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# Python dependencies
+# ---------------------------------------------------------------------------
+WORKDIR /app
+
+COPY requirements.monitor.txt ./requirements.monitor.txt
+RUN pip install --no-cache-dir -r requirements.monitor.txt
+
+# ---------------------------------------------------------------------------
+# Pre-download the embedding model into the image layer so the container
+# starts without WAN access (air-gapped operation).
+# The model is ~90 MB and stored in the HuggingFace cache.
+# ---------------------------------------------------------------------------
+ENV SENTENCE_TRANSFORMERS_HOME=/app/.model_cache \
+    TRANSFORMERS_OFFLINE=0
+
+RUN python -c "\
+from sentence_transformers import SentenceTransformer; \
+SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2', device='cpu'); \
+print('Model pre-cached successfully.')"
+
+# Switch to offline mode after baking — no WAN calls at runtime
+ENV TRANSFORMERS_OFFLINE=1 \
+    HF_DATASETS_OFFLINE=1
+
+# ---------------------------------------------------------------------------
+# Application source
+# ---------------------------------------------------------------------------
+COPY monitor_daemon.py ./monitor_daemon.py
+
+# ---------------------------------------------------------------------------
+# Runtime environment defaults (all overridable via docker-compose)
+# ---------------------------------------------------------------------------
+ENV QDRANT_URL="http://qdrant:6333" \
+    QDRANT_COLLECTION="canon_master_space" \
+    MCP_URL="http://deep-web-mcp:8000" \
+    ORCHESTRATOR_URL="http://langgraph-orchestrator:8100" \
+    DRIFT_THRESHOLD="0.15" \
+    EMBED_MODEL_NAME="sentence-transformers/all-MiniLM-L6-v2" \
+    CPU_THREADS="4" \
+    MCP_TIMEOUT_S="90" \
+    QDRANT_TIMEOUT_S="10" \
+    ALERT_TIMEOUT_S="30" \
+    PYTHONUNBUFFERED="1" \
+    PYTHONDONTWRITEBYTECODE="1"
+
+# ---------------------------------------------------------------------------
+# Non-root user
+# ---------------------------------------------------------------------------
+RUN addgroup --system monitor && adduser --system --ingroup monitor monitor
+USER monitor
+
+# ---------------------------------------------------------------------------
+# Expose and launch
+# ---------------------------------------------------------------------------
+EXPOSE 9000
+ENTRYPOINT ["python", "-m", "uvicorn", "monitor_daemon:app", \
+            "--host", "0.0.0.0", "--port", "9000", "--workers", "1"]

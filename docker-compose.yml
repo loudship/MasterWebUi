@@ -2,6 +2,10 @@ services:
   searxng:
     image: searxng/searxng:latest
     container_name: searxng
+    environment:
+      - HTTP_PROXY=socks5://tor-gateway:9050
+      - HTTPS_PROXY=socks5://tor-gateway:9050
+      - ALL_PROXY=socks5://tor-gateway:9050
     volumes:
       - ./data/searxng:/etc/searxng
     extra_hosts:
@@ -10,27 +14,14 @@ services:
       - llm-net
     restart: unless-stopped
 
-  pipelines:
-    image: ghcr.io/open-webui/pipelines:main
-    container_name: pipelines
-    environment:
-      - PIPELINES_API_KEY=${PIPELINES_API_KEY}
-    security_opt:
-      - seccomp:unconfined
-      - apparmor:unconfined
-      - label:type:container_engine_t
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    volumes:
-      - ./data/pipelines:/app/pipelines
-      - /sys/fs/cgroup:/sys/fs/cgroup:rw
-    networks:
-      - llm-net
-    restart: unless-stopped
 
   crawl4ai:
     image: unclecode/crawl4ai:0.6.0-r2
     container_name: crawl4ai
+    environment:
+      - HTTP_PROXY=socks5://tor-gateway:9050
+      - HTTPS_PROXY=socks5://tor-gateway:9050
+      - ALL_PROXY=socks5://tor-gateway:9050
     shm_size: 1g
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -41,6 +32,10 @@ services:
   crawl4ai-proxy:
     image: ghcr.io/lennyerik/crawl4ai-proxy:latest
     container_name: crawl4ai-proxy
+    environment:
+      - HTTP_PROXY=socks5://tor-gateway:9050
+      - HTTPS_PROXY=socks5://tor-gateway:9050
+      - ALL_PROXY=socks5://tor-gateway:9050
     ports:
       - "8000:8000"
     extra_hosts:
@@ -64,7 +59,10 @@ services:
     restart: unless-stopped
 
   open-webui:
-    image: ghcr.io/open-webui/open-webui:main
+    build:
+      context: ./open-webui-0.9.6
+      dockerfile: Dockerfile
+    image: open-webui:0.9.6
     container_name: open-webui
     environment:
       - OPENAI_API_BASE_URL=${OPENAI_API_BASE_URL}
@@ -99,6 +97,21 @@ services:
       - CHUNK_OVERLAP=${CHUNK_OVERLAP}
       - USE_MODEL_NAME=${USE_MODEL_NAME}
       - ENABLE_PERSISTENT_CONFIG=${ENABLE_PERSISTENT_CONFIG}
+      - OPENAI_API_BASE_URLS=${OPENAI_API_BASE_URLS}
+      - OPENAI_API_KEYS=${OPENAI_API_KEYS}
+      - AUDIO_TTS_ENGINE=${AUDIO_TTS_ENGINE}
+      - AUDIO_TTS_OPENAI_API_BASE_URL=${AUDIO_TTS_OPENAI_API_BASE_URL}
+      - AUDIO_TTS_OPENAI_API_KEY=${AUDIO_TTS_OPENAI_API_KEY}
+      - AUDIO_TTS_MODEL=${AUDIO_TTS_MODEL}
+      - AUDIO_TTS_VOICE=${AUDIO_TTS_VOICE}
+      - LM_STUDIO_BASE_URL=http://host.docker.internal:4321
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+      langgraph-orchestrator:
+        condition: service_healthy
     security_opt:
       - seccomp:unconfined
       - apparmor:unconfined
@@ -123,6 +136,45 @@ services:
       - "host.docker.internal:host-gateway"
     networks:
       - llm-net
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          bash -c 'exec 3<>/dev/tcp/127.0.0.1/6333;
+          printf "GET /readyz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3;
+          head -n 1 <&3 | grep -q "200 OK"'
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    restart: unless-stopped
+
+  langgraph-orchestrator:
+    build:
+      context: .
+      dockerfile: services/langgraph-orchestrator/Dockerfile
+    image: langgraph-orchestrator:latest
+    container_name: langgraph-orchestrator
+    environment:
+      - QDRANT_URI=http://qdrant:6333
+      - REDIS_URL=redis://redis-cache:6379/0
+      - LM_STUDIO_BASE_URL=http://host.docker.internal:4321
+      - PYTHONUNBUFFERED=1
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - llm-net
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8100/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
     restart: unless-stopped
 
   kokoro-tts:
@@ -149,6 +201,11 @@ services:
   calendar-db:
     image: postgres:15-alpine
     container_name: calendar-db
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U calendar -d calendar_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     environment:
       - POSTGRES_USER=calendar
       - POSTGRES_PASSWORD=calendar_secure_pass
@@ -164,8 +221,11 @@ services:
   calendar-mcp:
     image: hdn179/calendar-mcp:latest
     container_name: calendar-mcp
+    depends_on:
+      calendar-db:
+        condition: service_healthy
     environment:
-      - DB_POSTGRES_URL=postgresql://calendar:calendar_secure_pass@calendar-db:5432/calendar_db
+      - DB_POSTGRES_URL=postgresql://calendar:[REDACTED]@calendar-db:5432/calendar_db
       - CALENDAR_MCP_JWT_SECRET_KEY=my_secure_secret_123
     volumes:
       - calendar-mcp-data:/app/data
@@ -200,6 +260,11 @@ services:
   redis-cache:
     image: redis:alpine
     container_name: redis-cache
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
@@ -211,6 +276,9 @@ services:
   deep-web-mcp:
     build: ./deep-web-mcp
     container_name: deep-web-mcp
+    depends_on:
+      redis-cache:
+        condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
@@ -225,6 +293,164 @@ services:
     volumes:
       - ./data/deep-web-mcp:/app/data
     restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # vram-arbiter
+  # Non-blocking asyncio VRAM hardware arbiter daemon.
+  #
+  # Polls the LM Studio /v1/models endpoint at a strict 1000 ms interval and
+  # enforces a VRAM ceiling of 11.4 GiB (12 240 537 395 bytes) by applying
+  # a TTL=300 cache eviction on the LRU model via the lms CLI when the
+  # ceiling is met or exceeded.
+  #
+  # The service is intentionally lightweight (python:3.11-slim + aiohttp only)
+  # and runs as a non-root user.  It does NOT depend on ClickHouse or Langfuse
+  # for its core operation, but the service_healthy gate on redis-cache ensures
+  # the bridge network is fully initialised before the aiohttp connection pool
+  # begins its first polling tick.
+  # ---------------------------------------------------------------------------
+  vram-arbiter:
+    build:
+      context: .
+      dockerfile: Dockerfile.arbiter
+    image: vram-arbiter:latest
+    container_name: vram-arbiter
+    restart: unless-stopped
+
+    environment:
+      # ── Core arbiter parameters ──────────────────────────────────────────
+      # VRAM_CEILING: 11.4 GiB in bytes (11.4 × 1024³)
+      - VRAM_CEILING=12240537395
+      # Per-model VRAM footprint estimate in whole GB (heuristic; no VRAM API)
+      - VRAM_PER_MODEL_ESTIMATE_GB=5
+      # LM Studio inference endpoint — resolves to the host machine via
+      # host.docker.internal (bridge network extra_hosts mapping below)
+      - LM_STUDIO_API=http://host.docker.internal:4321/v1/models
+      # Unbuffered output so docker logs streams in real-time
+      - PYTHONUNBUFFERED=1
+
+    extra_hosts:
+      # Maps host.docker.internal → host-gateway so the aiohttp connection
+      # pool can reach LM Studio running on the Windows host without WAN egress
+      - "host.docker.internal:host-gateway"
+
+    networks:
+      - llm-net
+
+    # The arbiter's aiohttp pool issues its first request on the first tick.
+    # Waiting for redis-cache to be running (not merely started) ensures the
+    # bridge network routes are fully established and no frames are dropped
+    # during cold-boot initialisation.
+    depends_on:
+      redis-cache:
+        condition: service_healthy
+
+    # Logging: JSON format for structured log aggregation; cap at 10 MB.
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ---------------------------------------------------------------------------
+  # pytest-arbiter (one-shot smoke-test runner)
+  # Run with:  docker compose run --rm pytest-arbiter
+  # Executes the full test_vram_and_race_conditions.py suite offline.
+  # ---------------------------------------------------------------------------
+  pytest-arbiter:
+    build:
+      context: .
+      dockerfile: Dockerfile.arbiter
+    image: vram-arbiter:latest
+    container_name: pytest-arbiter
+    profiles:
+      - test                      # only active with --profile test flag
+    entrypoint: ["python", "-m", "pytest"]
+    command:
+      - "tests/test_vram_and_race_conditions.py"
+      - "-v"
+      - "--tb=short"
+      - "--asyncio-mode=auto"
+    environment:
+      - VRAM_CEILING=12240537395
+      - VRAM_PER_MODEL_ESTIMATE_GB=5
+      - LM_STUDIO_API=http://host.docker.internal:4321/v1/models
+      - PYTHONUNBUFFERED=1
+    volumes:
+      # Mount the full project so pytest can resolve the vram_arbiter_daemon module
+      - .:/app
+    working_dir: /app
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - llm-net
+
+  # ---------------------------------------------------------------------------
+  # monitor-daemon
+  # CPU-bound web change detection and semantic vector drift monitor.
+  #
+  # Uses sentence-transformers/all-MiniLM-L6-v2 on device=cpu only.
+  # Never allocates VRAM — PCIe bus and GPU are reserved exclusively
+  # for the primary LM Studio inference model.
+  #
+  # Exposes:
+  #   POST /monitor/evaluate  — full drift evaluation cycle
+  #   GET  /monitor/status    — daemon health and config summary
+  #   GET  /monitor/history   — last N evaluation records
+  #
+  # Depends on:
+  #   qdrant        — vector storage (canon_master_space)
+  #   deep-web-mcp  — sanitized content extraction
+  #   langgraph-orchestrator — alert endpoint target on the internal bridge
+  # ---------------------------------------------------------------------------
+  monitor-daemon:
+    build:
+      context: .
+      dockerfile: Dockerfile.monitor
+    image: monitor-daemon:latest
+    container_name: monitor-daemon
+    restart: unless-stopped
+
+    ports:
+      - "127.0.0.1:19000:9000"     # localhost-only; not exposed to host network
+
+    environment:
+      # ── Qdrant ────────────────────────────────────────────────────────────
+      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_COLLECTION=canon_master_space
+      # ── deep-web-mcp ──────────────────────────────────────────────────────
+      - MCP_URL=http://deep-web-mcp:8000
+      # ── LangGraph orchestrator (standalone service on llm-net) ────────────
+      - ORCHESTRATOR_URL=http://langgraph-orchestrator:8100
+      # ── Drift detection ───────────────────────────────────────────────────
+      - DRIFT_THRESHOLD=0.15
+      # ── CPU embedding model ───────────────────────────────────────────────
+      - EMBED_MODEL_NAME=sentence-transformers/all-MiniLM-L6-v2
+      # Bound to 4 threads to not starve the host LM Studio inference process
+      - CPU_THREADS=4
+      # ── Timeout knobs ─────────────────────────────────────────────────────
+      - MCP_TIMEOUT_S=90
+      - QDRANT_TIMEOUT_S=10
+      - ALERT_TIMEOUT_S=30
+      # ── Runtime ───────────────────────────────────────────────────────────
+      - PYTHONUNBUFFERED=1
+      - TRANSFORMERS_OFFLINE=1     # model pre-baked into image layer
+      - HF_DATASETS_OFFLINE=1
+
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      deep-web-mcp:
+        condition: service_started
+
+    networks:
+      - llm-net
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 networks:
   llm-net:
