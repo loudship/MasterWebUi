@@ -9,15 +9,23 @@ services:
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-clickhouse}
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-clickhouse}
     healthcheck:
-      interval: 10s
-      retries: 30
-      start_period: 10s
+      # Dual-port probe: verifies BOTH the HTTP interface (8123, used by
+      # CLICKHOUSE_URL) AND the native TCP interface (9000, used by
+      # CLICKHOUSE_MIGRATION_URL) are fully accepting connections before any
+      # dependent service runs database migrations.  This eliminates the
+      # schema-migration initialization race condition.
       test:
-      - CMD
-      - clickhouse-client
-      - --query
-      - SELECT 1
+      - CMD-SHELL
+      - >
+        wget -qO- http://127.0.0.1:8123/ping 2>/dev/null | grep -q 'Ok.' &&
+        clickhouse-client --host 127.0.0.1 --port 9000
+          --user ${CLICKHOUSE_USER:-clickhouse}
+          --password ${CLICKHOUSE_PASSWORD:-clickhouse}
+          --query 'SELECT 1' > /dev/null 2>&1
+      interval: 5s
       timeout: 5s
+      retries: 30
+      start_period: 20s
     image: docker.io/clickhouse/clickhouse-server
     networks:
     - llm-net
@@ -30,6 +38,11 @@ services:
     - langfuse_clickhouse_data:/var/lib/clickhouse
     - langfuse_clickhouse_logs:/var/log/clickhouse-server
   langfuse-server:
+    # Deterministic initialization sequence:
+    # langfuse-server will not start (and therefore will not attempt any
+    # ClickHouse or Postgres migrations) until ALL three database services
+    # report service_healthy.  The clickhouse condition specifically waits
+    # for the dual-port probe (8123 + 9000) defined above.
     depends_on: &id001
       clickhouse:
         condition: service_healthy
@@ -37,6 +50,14 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - wget -qO- http://127.0.0.1:3000/api/public/health 2>/dev/null | grep -q 'ok'
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
     environment:
       CLICKHOUSE_CLUSTER_ENABLED: ${CLICKHOUSE_CLUSTER_ENABLED:-false}
       CLICKHOUSE_MIGRATION_URL: ${CLICKHOUSE_MIGRATION_URL:-clickhouse://clickhouse:9000}
@@ -103,12 +124,15 @@ services:
     - 3000:3000
     restart: always
   langfuse-worker:
+    # langfuse-worker inherits the same deterministic dependency block via the
+    # YAML anchor *id001.  It will not attempt ClickHouse migrations until both
+    # port 8123 and port 9000 are confirmed healthy.
     depends_on: *id001
     environment:
       CLICKHOUSE_CLUSTER_ENABLED: ${CLICKHOUSE_CLUSTER_ENABLED:-false}
-      CLICKHOUSE_MIGRATION_URL: ''
+      CLICKHOUSE_MIGRATION_URL: ${CLICKHOUSE_MIGRATION_URL:-clickhouse://clickhouse:9000}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-clickhouse}
-      CLICKHOUSE_URL: ''
+      CLICKHOUSE_URL: ${CLICKHOUSE_URL:-http://clickhouse:8123}
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-clickhouse}
       DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/postgres}
       EMAIL_FROM_ADDRESS: ${EMAIL_FROM_ADDRESS:-}

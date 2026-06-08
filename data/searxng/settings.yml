@@ -1,9 +1,15 @@
 use_default_settings: true
+
 server:
-  port: 8080
+  # SearXNG's Docker entrypoint binds the uwsgi/gunicorn process on port 8080
+  # regardless of this setting. Do NOT set port: 8082 here -- the process
+  # supervisor ignores it and the container will only answer on 8080 internally.
+  # The host-side mapping (8082:8080) is handled in docker-compose.yml.
   bind_address: "0.0.0.0"
   secret_key: "searxngsecret"
+  # Internal DNS name used by other containers on llm-net resolves to port 8080
   base_url: http://searxng:8080/
+
 search:
   formats:
     - html

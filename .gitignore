@@ -14,8 +14,11 @@ langfuse-skills/
 
 # Output and temporary log files
 out.txt
+db_output.txt
 *.log
 *.tmp
+.pytest_cache/
+.agents/
 
 # Python files
 __pycache__/
@@ -30,3 +33,17 @@ env/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# Local backup artifacts and generated archives
+backup/
+backups/
+backup_staging_*/
+*.sha256
+*.parity
+*.pars
+*.tar.gz
+*.tar.zst
+
+# Large local source snapshots and scratch trees
+open-webui-0.9.6/
+tmp_retrieval/

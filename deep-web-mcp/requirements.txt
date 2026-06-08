@@ -10,5 +10,4 @@ httpx
 sse-starlette
 crawl4ai
 playwright
-
 langfuse
