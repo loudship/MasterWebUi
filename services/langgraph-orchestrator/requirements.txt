@@ -2,7 +2,10 @@ fastapi==0.135.1
 uvicorn[standard]==0.41.0
 pydantic==2.12.5
 aiohttp==3.13.5
+asyncpg==0.31.0
 redis==7.4.0
 qdrant-client==1.17.0
 langgraph==1.0.10
 langgraph-checkpoint==4.1.1
+langgraph-checkpoint-postgres==3.1.0
+psycopg[binary]==3.3.4

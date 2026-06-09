@@ -15,28 +15,4 @@ search:
     - html
     - json
 
-engines:
-  # Example Deep Web JSON Engine routing over Tor Proxy
-  - name: hidden_example_db
-    engine: json_engine
-    search_url: "http://hidden-service.onion/api/search?q={query}"
-    results_query: "results"
-    url_query: "url"
-    title_query: "title"
-    content_query: "content"
-    proxies:
-      http: "socks5://tor-gateway:9050"
-      https: "socks5://tor-gateway:9050"
-    shortcut: hidden_db
-
-  # Example XPath Engine routing over Tor Proxy
-  - name: dark_academic_registry
-    engine: xpath
-    search_url: "http://academic-registry.onion/search?q={query}"
-    results_xpath: "//div[@class='result']"
-    url_xpath: ".//a/@href"
-    title_xpath: ".//a/text()"
-    content_xpath: ".//p[@class='summary']/text()"
-    proxies:
-      http: "socks5://tor-gateway:9050"
-      https: "socks5://tor-gateway:9050"
+engines: []

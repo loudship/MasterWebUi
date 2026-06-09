@@ -1,21 +1,21 @@
-FROM python:3.11-slim
+FROM python:3.11-slim@sha256:a3ab0b966bc4e91546a033e22093cb840908979487a9fc0e6e38295747e49ac0
 
 WORKDIR /app/orchestrator
 
-RUN apt-get update \
- && apt-get install -y --no-install-recommends curl \
- && rm -rf /var/lib/apt/lists/*
-
 COPY services/langgraph-orchestrator/requirements.txt ./requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+COPY wheelhouse/langgraph-orchestrator /wheelhouse
+RUN pip install --no-cache-dir --no-index --find-links=/wheelhouse -r requirements.txt \
+ && rm -rf /wheelhouse
 
 COPY backend/langgraph_orchestrator.py backend/hitl_broker.py ./
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     QDRANT_URI=http://qdrant:6333 \
-    REDIS_URL=redis://redis-cache:6379/0 \
-    LM_STUDIO_BASE_URL=http://host.docker.internal:4321
+    QDRANT_NARRATIVE_ALIAS=narrative_active \
+    REDIS_URL=redis://redis-hitl:6379/0 \
+    INFERENCE_GATEWAY_URL=http://inference-gateway:4321 \
+    LANGGRAPH_STRICT_MSGPACK=true
 
 RUN addgroup --system orchestrator \
  && adduser --system --ingroup orchestrator orchestrator
@@ -24,6 +24,6 @@ USER orchestrator
 EXPOSE 8100
 
 HEALTHCHECK --interval=10s --timeout=5s --start-period=20s --retries=6 \
-  CMD curl -fsS http://127.0.0.1:8100/health >/dev/null || exit 1
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8100/health', timeout=4)"
 
 CMD ["python", "-m", "uvicorn", "langgraph_orchestrator:app", "--host", "0.0.0.0", "--port", "8100", "--workers", "1", "--log-level", "info"]

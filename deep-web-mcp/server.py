@@ -11,28 +11,26 @@ Architecture
 
 Core tool: fetch_deep_web_data
 --------------------------------
-Wraps Crawl4AI's AsyncWebCrawler to perform authenticated, anonymised
-deep-web extraction with real-time status streaming.
+Wraps Crawl4AI's AsyncWebCrawler to perform authenticated extraction from
+explicitly allowed internal services with real-time status streaming.
 
 Execution sequence
 ------------------
-1. Cache probe (Redis SHA-256 keyed).
-2. If session_required=True: query SQLite CredentialVault by thread_id
+1. If session_required=True: query PostgreSQL CredentialVault by thread_id
    to pull stored JWTs + persistent cookies.
-3. Build Crawl4AI BrowserConfig:
-   - Inject Privoxy HTTP proxy (http://tor-gateway:8118) when use_tor_network=True.
+2. Build Crawl4AI BrowserConfig:
    - Pass cookies and JWT headers from the vault as browser_kwargs so they are
      injected into the Chromium context via the on_page_context_created hook.
-4. Run AsyncWebCrawler.arun() with default markdown conversion (fit_markdown).
-5. Process extracted markdown through TextSanitizer pipeline:
+3. Run AsyncWebCrawler.arun() with default markdown conversion (fit_markdown).
+4. Process extracted markdown through TextSanitizer pipeline:
    - Strip base64 blobs.
    - Strip nested table blocks.
    - Enforce MAX_CHARS = 20 000 with TRUNCATION_SENTINEL.
-6. Cache sanitized output for 3 600 s, return structured JSON.
+5. Return structured JSON without a cache layer.
 
 Error contract
 --------------
-Any runtime error from Crawl4AI (proxy dropout, navigation timeout,
+Any runtime error from Crawl4AI (navigation timeout,
 container crash, shared memory exhaustion) is caught, the browser context
 is closed to release shared memory, and a standardised JSON error block is
 returned with error_code=EGRESS_TIMEOUT_BREACH.
@@ -47,8 +45,6 @@ Changes from v2
 ---------------
 - Primary extraction backend changed from PlaywrightExtractor to Crawl4AI
   AsyncWebCrawler.
-- Tor proxy switched from SOCKS5 direct to Privoxy HTTP bridge
-  (http://tor-gateway:8118) as specified.
 - session_required parameter gates credential vault lookup explicitly.
 - /sse route added for MCP SSE transport (Starlette SseServerTransport).
 - Pydantic v2-compatible field declarations.
@@ -59,7 +55,6 @@ Changes from v2
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
 import os
@@ -67,10 +62,9 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Optional
+from urllib.parse import urlparse
 
-import redis
 from fastapi import FastAPI, Request
-from fastapi.responses import StreamingResponse
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel, Field
@@ -83,7 +77,7 @@ from sse_starlette.sse import EventSourceResponse
 
 # Local modules
 from database import get_credentials, save_credentials
-from sanitizer import TextSanitizer, MAX_CHARS, TRUNCATION_SENTINEL
+from sanitizer import TextSanitizer, MAX_CHARS
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(
@@ -95,20 +89,27 @@ logging.basicConfig(
 # Environment configuration
 # ---------------------------------------------------------------------------
 
-REDIS_URL:       str = os.getenv("REDIS_URL",       "redis://redis-cache:6379/0")
 SEARXNG_URL:     str = os.getenv("SEARXNG_URL",     "http://searxng:8080")
-
-# Privoxy HTTP→SOCKS5 bridge for Tor traffic
-TOR_HTTP_PROXY:  str = os.getenv("TOR_HTTP_PROXY",  "http://tor-gateway:8118")
+ALLOWED_TARGET_HOSTS = {
+    host.strip().lower()
+    for host in os.environ.get("ALLOWED_TARGET_HOSTS", "crawl4ai,searxng,browserless").split(",")
+    if host.strip()
+}
 
 # Page navigation timeout (ms)
 PAGE_TIMEOUT_MS: int = int(os.getenv("PAGE_TIMEOUT_MS", "45000"))
 
-# Redis connection
-redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
-
 # Singleton sanitizer
 _sanitizer = TextSanitizer(max_chars=MAX_CHARS)
+
+
+def _assert_internal_target(url: str) -> None:
+    hostname = (urlparse(url).hostname or "").lower()
+    if hostname not in ALLOWED_TARGET_HOSTS:
+        raise ValueError(
+            f"Target host {hostname!r} is not in the internal allowlist: "
+            f"{sorted(ALLOWED_TARGET_HOSTS)}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -153,10 +154,9 @@ def _error_block(
 
     error_code values
     -----------------
-    EGRESS_TIMEOUT_BREACH   — proxy dropout, navigation timeout
+    EGRESS_TIMEOUT_BREACH   — navigation timeout or blocked internal target
     SESSION_LOAD_FAILURE    — credential vault unreachable
     CRAWL4AI_ERROR          — unexpected Crawl4AI runtime exception
-    CACHE_WRITE_FAILURE     — Redis unavailable (non-fatal, content still returned)
     """
     return {
         "status":     "error",
@@ -191,13 +191,13 @@ class FetchDeepWebDataInput(BaseModel):
     Fields
     ------
     target_database : str
-        Valid URL (https://...) or .onion hidden service address.
+        Valid URL whose host is present in ALLOWED_TARGET_HOSTS.
         The crawler will navigate to this endpoint and extract its full
         DOM content as sanitized markdown.
 
     thread_id : str
         Active session thread identifier.  Used as the primary key to look
-        up JWT arrays and persistent cookies from the local SQLite
+        up JWT arrays and persistent cookies from the PostgreSQL
         CredentialVault (AES-256 encrypted).  Defaults to "default".
 
     session_required : bool
@@ -206,11 +206,6 @@ class FetchDeepWebDataInput(BaseModel):
         before issuing any navigation command to the browser context.
         Tokens are injected into the Chromium context via
         on_page_context_created before the first HTTP request is sent.
-
-    use_tor_network : bool
-        When True, routes all browser traffic through the local Privoxy
-        HTTP→SOCKS5 bridge at http://tor-gateway:8118, which forwards
-        traffic to the Tor SOCKS5 daemon.  Required for .onion addresses.
 
     js_eval : str | None
         Optional JavaScript expression to evaluate on the page after the
@@ -222,10 +217,9 @@ class FetchDeepWebDataInput(BaseModel):
         extraction (supplements raw page content with search results).
     """
 
-    target_database:  str            = Field(..., description="Target URL or .onion address.")
+    target_database:  str            = Field(..., description="Allowed internal target URL.")
     thread_id:        str            = Field("default", description="Session thread ID for credential lookup.")
     session_required: bool           = Field(False, description="Pause loop and load session credentials from vault.")
-    use_tor_network:  bool           = Field(False, description="Route via Privoxy/Tor HTTP proxy.")
     js_eval:          Optional[str]  = Field(None, description="Optional JS to evaluate post-load.")
     search_query:     Optional[str]  = Field(None, description="Optional SearXNG search query.")
 
@@ -238,7 +232,6 @@ async def _crawl4ai_extract(
     url:              str,
     thread_id:        str,
     session_required: bool,
-    use_tor:          bool,
     js_eval:          Optional[str],
     task_id:          str,
 ) -> dict:
@@ -248,9 +241,7 @@ async def _crawl4ai_extract(
     Steps
     -----
     1. If session_required: pull stored credentials from CredentialVault.
-    2. Build BrowserConfig with:
-       - Privoxy HTTP proxy when use_tor=True.
-       - Cookie / JWT header injection via on_page_context_created hook.
+    2. Build BrowserConfig with cookie / JWT header injection.
     3. Run AsyncWebCrawler.arun() targeting the URL.
     4. Post-process with TextSanitizer (MAX_CHARS=20 000).
     5. Return structured result dict.
@@ -259,6 +250,7 @@ async def _crawl4ai_extract(
     """
 
     try:
+        _assert_internal_target(url)
         from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
         from crawl4ai.content_filter_strategy import PruningContentFilter
         from crawl4ai.markdown_generation_strategy import DefaultMarkdownGenerator
@@ -321,10 +313,9 @@ async def _crawl4ai_extract(
     #
     # Crawl4AI BrowserConfig fields used:
     #   headless=True             — no display required in container
-    #   proxy_config              — Privoxy HTTP proxy when use_tor=True
     #   headers                   — JWT Authorization header injection
     #   cookies                   — Persistent cookie list from CredentialVault
-    #   ignore_https_errors=True  — required for .onion self-signed certs
+    #   ignore_https_errors=True  — permits internal self-signed certificates
     #   page_timeout              — navigation timeout (ms)
     #   use_managed_browser=False — use spawned Chromium, not persistent profile
     #
@@ -358,12 +349,6 @@ async def _crawl4ai_extract(
         if c.get("name") and c.get("value")
     ]
 
-    # Proxy configuration
-    proxy_config: Optional[dict] = None
-    if use_tor:
-        proxy_config = {"server": TOR_HTTP_PROXY}
-        logger.info("[CRAWL4AI] Tor HTTP proxy enabled: %s", TOR_HTTP_PROXY)
-
     # Chromium launch args for air-gapped container operation
     browser_args = [
         "--no-sandbox",
@@ -386,7 +371,6 @@ async def _crawl4ai_extract(
             extra_args=browser_args,
             headers=extra_headers,
             cookies=crawl_cookies if crawl_cookies else None,
-            proxy_config=proxy_config,
             page_timeout=PAGE_TIMEOUT_MS,
             use_managed_browser=False,
             verbose=False,
@@ -402,7 +386,6 @@ async def _crawl4ai_extract(
                 headless=True,
                 ignore_https_errors=True,
                 extra_args=browser_args,
-                proxy_config=proxy_config,
             )
         except Exception as exc2:
             return _error_block(
@@ -451,8 +434,8 @@ async def _crawl4ai_extract(
 
     # ── Step 4: Run AsyncWebCrawler ────────────────────────────────────────
     logger.info(
-        "[CRAWL4AI] Starting crawl — task_id=%s  url=%r  tor=%s  session=%s",
-        task_id, url, use_tor, session_required,
+        "[CRAWL4AI] Starting crawl — task_id=%s  url=%r  session=%s",
+        task_id, url, session_required,
     )
 
     crawler_result = None
@@ -473,15 +456,8 @@ async def _crawl4ai_extract(
 
     except Exception as exc:
         msg = str(exc)
-        # Classify common Tor / anti-bot failure signatures
-        if any(sig in msg for sig in (
-            "ERR_SOCKS_CONNECTION_FAILED",
-            "ERR_TUNNEL_CONNECTION_FAILED",
-            "ERR_PROXY_CONNECTION_FAILED",
-            "net::ERR_SOCKS_",
-        )):
-            code = "EGRESS_TIMEOUT_BREACH"
-        elif "ERR_NAME_NOT_RESOLVED" in msg or "ERR_CONNECTION_REFUSED" in msg:
+        # Classify common browser and anti-bot failure signatures.
+        if "ERR_NAME_NOT_RESOLVED" in msg or "ERR_CONNECTION_REFUSED" in msg:
             code = "EGRESS_TIMEOUT_BREACH"
         elif "403" in msg or "429" in msg or "cloudflare" in msg.lower():
             code = "EGRESS_TIMEOUT_BREACH"
@@ -559,39 +535,31 @@ async def fetch_deep_web_data(
     target_database:  str,
     thread_id:        str  = "default",
     session_required: bool = False,
-    use_tor_network:  bool = False,
     js_eval:          str  = None,
 ) -> str:
     """
-    Extract and sanitize content from deep web portals, SPAs, or .onion services.
+    Extract and sanitize content from an allowed internal service.
 
     Backed by Crawl4AI's AsyncWebCrawler with authenticated Chromium rendering.
 
     The tool performs a complete extraction pipeline:
-      1. Cache probe (SHA-256 keyed, 1-hour TTL).
-      2. Optional CredentialVault lookup (JWT + cookies) when session_required=True.
-      3. Chromium browser context hydration via on_page_context_created hook.
-      4. Optional Privoxy HTTP proxy routing (Tor) via use_tor_network=True.
-      5. Markdown DOM extraction with structural boilerplate removal.
-      6. TextSanitizer pipeline: base64 strip → nested table strip → MAX_CHARS=20 000.
+      1. Optional CredentialVault lookup (JWT + cookies) when session_required=True.
+      2. Chromium browser context hydration via on_page_context_created hook.
+      3. Markdown DOM extraction with structural boilerplate removal.
+      4. TextSanitizer pipeline: base64 strip → nested table strip → MAX_CHARS=20 000.
 
     Parameters
     ----------
     target_database : str
-        Valid URL or .onion hidden service address to extract.
+        Valid URL whose host is present in ALLOWED_TARGET_HOSTS.
 
     thread_id : str
         Active session thread identifier used to look up authentication
-        tokens from the local SQLite CredentialVault.
+        tokens from the PostgreSQL CredentialVault.
 
     session_required : bool
         If True, pause the execution loop and query the CredentialVault for
         stored JWTs and persistent cookies before any browser navigation.
-
-    use_tor_network : bool
-        If True, route all browser traffic through the local Privoxy HTTP
-        bridge (http://tor-gateway:8118) for anonymised egress via Tor.
-        Required for .onion address resolution.
 
     js_eval : str | None
         Optional JavaScript expression evaluated on the page after load.
@@ -605,24 +573,6 @@ async def fetch_deep_web_data(
         or on failure:
           status, task_id, url, error_code, reason
     """
-    # ── Cache probe ────────────────────────────────────────────────────────
-    sig      = f"{target_database}|{thread_id}|{session_required}|{use_tor_network}|{js_eval}"
-    url_hash = hashlib.sha256(sig.encode()).hexdigest()
-    cache_key = f"mcp_cache:{url_hash}"
-
-    try:
-        cached = redis_client.get(cache_key)
-    except Exception:
-        cached = None
-
-    if cached:
-        logger.info("[MCP] Cache hit — hash=%s", url_hash[:12])
-        return json.dumps({
-            "status":  "success",
-            "source":  "cache",
-            "content": cached,
-        })
-
     # ── Register task ──────────────────────────────────────────────────────
     task_id = str(uuid.uuid4())
     _task_registry[task_id] = ExtractionTask(
@@ -637,19 +587,12 @@ async def fetch_deep_web_data(
         url=target_database,
         thread_id=thread_id,
         session_required=session_required,
-        use_tor=use_tor_network,
         js_eval=js_eval,
         task_id=task_id,
     )
 
     if result["status"] != "success":
         return json.dumps(result)
-
-    # ── Cache successful result ────────────────────────────────────────────
-    try:
-        redis_client.setex(cache_key, 3600, result["content"])
-    except Exception as exc:
-        logger.warning("[MCP] Redis cache write failed (non-fatal): %s", exc)
 
     return json.dumps(result)
 
@@ -663,7 +606,6 @@ async def search_deep_web_database(
     target_database:  str,
     search_query:     str,
     session_required: bool = False,
-    use_tor_network:  bool = False,
 ) -> str:
     """
     Search specific deep web databases or academic registries via SearXNG.
@@ -671,31 +613,13 @@ async def search_deep_web_database(
     Parameters
     ----------
     target_database : str
-        SearXNG engine identifier (e.g. "ahmia", "torch", "google").
+        Enabled internal SearXNG engine identifier.
     search_query : str
         The query string to submit.
     session_required : bool
         Reserved for future authenticated SearXNG instances.
-    use_tor_network : bool
-        Reserved — SearXNG is always routed internally.
     """
     import httpx
-
-    sig        = f"{target_database}|{search_query}|{use_tor_network}"
-    query_hash = hashlib.sha256(sig.encode()).hexdigest()
-    cache_key  = f"searxng_cache:{query_hash}"
-
-    try:
-        cached = redis_client.get(cache_key)
-    except Exception:
-        cached = None
-
-    if cached:
-        return json.dumps({
-            "status":  "success",
-            "source":  "cache",
-            "results": json.loads(cached),
-        })
 
     params = {"q": search_query, "engines": target_database, "format": "json"}
     async with httpx.AsyncClient() as client:
@@ -705,13 +629,6 @@ async def search_deep_web_database(
             )
             resp.raise_for_status()
             data = resp.json()
-            try:
-                redis_client.setex(
-                    cache_key, 3600,
-                    json.dumps(data.get("results", [])),
-                )
-            except Exception:
-                pass
             return json.dumps({"status": "success", "results": data.get("results", [])})
         except Exception as exc:
             return json.dumps({"status": "error", "message": str(exc)})
@@ -767,7 +684,6 @@ class ExtractRequest(BaseModel):
     url:              str
     thread_id:        str  = Field("default", description="Session thread ID.")
     session_required: bool = Field(False,     description="Load credentials from vault.")
-    use_tor_network:  bool = Field(False,     description="Route via Tor HTTP proxy.")
     js_eval:          Optional[str] = Field(None, description="JS to evaluate post-load.")
 
 
@@ -791,10 +707,6 @@ async def extract_stream(req: ExtractRequest):
       event: error     data: {"task_id":str, "error_code":str, "reason":str}
     """
     task_id   = str(uuid.uuid4())
-    sig       = f"{req.url}|{req.thread_id}|{req.session_required}|{req.use_tor_network}|{req.js_eval}"
-    url_hash  = hashlib.sha256(sig.encode()).hexdigest()
-    cache_key = f"mcp_cache:{url_hash}"
-
     # Seed the registry immediately so the generator can read it from frame 0
     _task_registry[task_id] = ExtractionTask(
         task_id=task_id,
@@ -803,48 +715,15 @@ async def extract_stream(req: ExtractRequest):
         status="pending",
     )
 
-    # ── Fast-path cache hit ────────────────────────────────────────────────
-    try:
-        cached = redis_client.get(cache_key)
-    except Exception:
-        cached = None
-
-    if cached:
-        async def _cached_stream():
-            yield {
-                "event": "progress",
-                "data":  json.dumps({
-                    "task_id":  task_id,
-                    "progress": 100,
-                    "status":   "done",
-                    "url":      req.url,
-                }),
-            }
-            yield {
-                "event": "result",
-                "data":  json.dumps({
-                    "task_id": task_id,
-                    "content": cached,
-                    "source":  "cache",
-                }),
-            }
-        return EventSourceResponse(_cached_stream())
-
     # ── Background extraction task ─────────────────────────────────────────
     async def _run_extraction() -> dict:
         result = await _crawl4ai_extract(
             url=req.url,
             thread_id=req.thread_id,
             session_required=req.session_required,
-            use_tor=req.use_tor_network,
             js_eval=req.js_eval,
             task_id=task_id,
         )
-        if result.get("status") == "success":
-            try:
-                redis_client.setex(cache_key, 3600, result["content"])
-            except Exception:
-                pass
         return result
 
     bg_task = asyncio.create_task(_run_extraction())
@@ -952,7 +831,6 @@ async def extract_status(task_id: str):
 class CredentialStoreRequest(BaseModel):
     thread_id:  str
     auth_array: list        # list of cookie dicts or {"name": "__jwt__", "value": "..."}
-    proxy_node: Optional[str] = None
 
 
 @app.post("/credentials/store")
@@ -962,13 +840,12 @@ async def store_credentials(req: CredentialStoreRequest):
     given thread_id.  Consumed by the session_required lookup path.
 
     The payload is AES-256 encrypted via Fernet before storage in the
-    local SQLite CredentialVault.
+    PostgreSQL CredentialVault.
     """
     try:
         save_credentials(
             domain_id=req.thread_id,
             payload=req.auth_array,
-            proxy_node=req.proxy_node,
         )
         return {
             "status":    "ok",

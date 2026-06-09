@@ -1,153 +1,49 @@
+name: hardened-airgap-ai
+
+x-core-environment: &core-environment
+  NO_PROXY: localhost,127.0.0.1,postgres,qdrant,redis-hitl,inference-gateway,langgraph-orchestrator,pipelines,open-webui
+  no_proxy: localhost,127.0.0.1,postgres,qdrant,redis-hitl,inference-gateway,langgraph-orchestrator,pipelines,open-webui
+
+x-postgres-health-dependency: &postgres-health-dependency
+  postgres:
+    condition: service_healthy
+
+x-qdrant-health-dependency: &qdrant-health-dependency
+  qdrant:
+    condition: service_healthy
+
+x-airgap-dns: &airgap-dns
+  - 127.0.0.1
+
 services:
-  searxng:
-    image: searxng/searxng:latest
-    container_name: searxng
+  postgres:
+    image: postgres@sha256:0027bef26712baaee437a4ea48fdf3d2d2e2bc5f0d81615374408ca320f3c7e3
+    pull_policy: never
+    container_name: hardened-postgres
     environment:
-      - HTTP_PROXY=socks5://tor-gateway:9050
-      - HTTPS_PROXY=socks5://tor-gateway:9050
-      - ALL_PROXY=socks5://tor-gateway:9050
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in the operator environment}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the operator environment}
+      POSTGRES_DB: postgres
     volumes:
-      - ./data/searxng:/etc/searxng
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    networks:
-      - llm-net
-    restart: unless-stopped
-
-
-  crawl4ai:
-    image: unclecode/crawl4ai:0.6.0-r2
-    container_name: crawl4ai
-    environment:
-      - HTTP_PROXY=socks5://tor-gateway:9050
-      - HTTPS_PROXY=socks5://tor-gateway:9050
-      - ALL_PROXY=socks5://tor-gateway:9050
-      - NO_PROXY=localhost,127.0.0.1,crawl4ai,crawl4ai-proxy,searxng,open-webui,qdrant,redis-cache,langgraph-orchestrator,deep-web-mcp
-      - no_proxy=localhost,127.0.0.1,crawl4ai,crawl4ai-proxy,searxng,open-webui,qdrant,redis-cache,langgraph-orchestrator,deep-web-mcp
-    shm_size: 1g
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:11235/health >/dev/null || exit 1"]
-      interval: 15s
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d postgres"]
+      interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 10
       start_period: 20s
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     networks:
       - llm-net
-    restart: unless-stopped
-
-  crawl4ai-proxy:
-    image: ghcr.io/lennyerik/crawl4ai-proxy:latest
-    container_name: crawl4ai-proxy
-    environment:
-      - HTTP_PROXY=socks5://tor-gateway:9050
-      - HTTPS_PROXY=socks5://tor-gateway:9050
-      - ALL_PROXY=socks5://tor-gateway:9050
-      - NO_PROXY=localhost,127.0.0.1,crawl4ai,crawl4ai-proxy,searxng,open-webui,qdrant,redis-cache,langgraph-orchestrator,deep-web-mcp
-      - no_proxy=localhost,127.0.0.1,crawl4ai,crawl4ai-proxy,searxng,open-webui,qdrant,redis-cache,langgraph-orchestrator,deep-web-mcp
-    ports:
-      - "8000:8000"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    networks:
-      - llm-net
-    restart: unless-stopped
-
-  docling-serve:
-    image: quay.io/docling-project/docling-serve:latest
-    container_name: docling-serve
-    ports:
-      - "5001:5001"
-    environment:
-      - UVICORN_WORKERS=1
-      - DOCLING_SERVE_MAX_SYNC_WAIT=300
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    networks:
-      - llm-net
-    restart: unless-stopped
-
-  open-webui:
-    build:
-      context: ./open-webui-0.9.6
-      dockerfile: Dockerfile
-    image: open-webui:0.9.6
-    container_name: open-webui
-    environment:
-      - OPENAI_API_BASE_URL=${OPENAI_API_BASE_URL}
-      - ENABLE_OLLAMA_API=${ENABLE_OLLAMA_API}
-      - ENABLE_WEB_SEARCH=${ENABLE_WEB_SEARCH}
-      - WEB_SEARCH_ENGINE=${WEB_SEARCH_ENGINE}
-      - SEARXNG_QUERY_URL=${SEARXNG_QUERY_URL}
-      - WEB_SEARCH_TRUST_ENV=${WEB_SEARCH_TRUST_ENV}
-      - WEB_SEARCH_RESULT_COUNT=${WEB_SEARCH_RESULT_COUNT}
-      - WEB_LOADER_CONCURRENT_REQUESTS=${WEB_LOADER_CONCURRENT_REQUESTS}
-      - WEB_SEARCH_CONCURRENT_REQUESTS=${WEB_SEARCH_CONCURRENT_REQUESTS}
-      - RAG_SYSTEM_CONTEXT=${RAG_SYSTEM_CONTEXT}
-      - WEB_LOADER_ENGINE=${WEB_LOADER_ENGINE}
-      - EXTERNAL_WEB_LOADER_URL=${EXTERNAL_WEB_LOADER_URL}
-      - EXTERNAL_WEB_LOADER_API_KEY=${EXTERNAL_WEB_LOADER_API_KEY}
-      - CONTENT_EXTRACTION_ENGINE=${CONTENT_EXTRACTION_ENGINE}
-      - DOCLING_ENGINE_URL=${DOCLING_ENGINE_URL}
-      - ENABLE_OPENAI_IMAGE_URL=${ENABLE_OPENAI_IMAGE_URL}
-      - CODE_EVAL_VALVE_OVERRIDE_MAX_RUNTIME_SECONDS=${CODE_EVAL_VALVE_OVERRIDE_MAX_RUNTIME_SECONDS}
-      - CODE_EVAL_VALVE_OVERRIDE_REQUIRE_RESOURCE_LIMITING=${CODE_EVAL_VALVE_OVERRIDE_REQUIRE_RESOURCE_LIMITING}
-      - CODE_EVAL_VALVE_OVERRIDE_AUTO_INSTALL=${CODE_EVAL_VALVE_OVERRIDE_AUTO_INSTALL}
-      - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY}
-      - WEBUI_AUTH_TRUSTED_EMAIL_HEADERS=${WEBUI_AUTH_TRUSTED_EMAIL_HEADERS}
-      - LANGFUSE_HOST=${LANGFUSE_HOST}
-      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY}
-      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY}
-      - MCPS=${MCPS}
-      - MCPS_URLS=${MCPS}
-      - AGENT_MAX_STEPS=${AGENT_MAX_STEPS}
-      - CHAT_RESPONSE_MAX_TOOL_CALL_ITERATIONS=${CHAT_RESPONSE_MAX_TOOL_CALL_ITERATIONS}
-      - VECTOR_DB=${VECTOR_DB}
-      - QDRANT_URI=${QDRANT_URI}
-      - CHUNK_SIZE=${CHUNK_SIZE}
-      - CHUNK_OVERLAP=${CHUNK_OVERLAP}
-      - USE_MODEL_NAME=${USE_MODEL_NAME}
-      - ENABLE_PERSISTENT_CONFIG=${ENABLE_PERSISTENT_CONFIG}
-      - OPENAI_API_BASE_URLS=${OPENAI_API_BASE_URLS}
-      - OPENAI_API_KEYS=${OPENAI_API_KEYS}
-      - AUDIO_TTS_ENGINE=${AUDIO_TTS_ENGINE}
-      - AUDIO_TTS_OPENAI_API_BASE_URL=${AUDIO_TTS_OPENAI_API_BASE_URL}
-      - AUDIO_TTS_OPENAI_API_KEY=${AUDIO_TTS_OPENAI_API_KEY}
-      - AUDIO_TTS_MODEL=${AUDIO_TTS_MODEL}
-      - AUDIO_TTS_VOICE=${AUDIO_TTS_VOICE}
-      - LM_STUDIO_BASE_URL=http://host.docker.internal:4321
-    depends_on:
-      qdrant:
-        condition: service_healthy
-      redis-cache:
-        condition: service_healthy
-      langgraph-orchestrator:
-        condition: service_healthy
-    security_opt:
-      - seccomp:unconfined
-      - apparmor:unconfined
-      - label:type:container_engine_t
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    ports:
-      - "8080:8080"
-    volumes:
-      - ./data/open-webui:/app/backend/data
-      - /sys/fs/cgroup:/sys/fs/cgroup:rw
-    networks:
-      - llm-net
+    dns: *airgap-dns
     restart: unless-stopped
 
   qdrant:
-    image: qdrant/qdrant:latest
-    container_name: qdrant
+    image: qdrant/qdrant@sha256:45f8e3ddc2570a4d029877e1b5ec1045c19b3852b4e22a55c7f43b05aea0ca89
+    pull_policy: never
+    container_name: hardened-qdrant
     volumes:
       - ./data/qdrant:/qdrant/storage
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    networks:
-      - llm-net
     healthcheck:
       test:
         - CMD-SHELL
@@ -157,317 +53,327 @@ services:
           head -n 1 <&3 | grep -q "200 OK"'
       interval: 10s
       timeout: 5s
-      retries: 6
+      retries: 10
       start_period: 20s
+    networks:
+      - llm-net
+    dns: *airgap-dns
+    restart: unless-stopped
+
+  redis-hitl:
+    image: redis@sha256:09160599abd229764c0fb44cb6be640294e1d360a54b19985ab4843dcf2d90f1
+    pull_policy: never
+    container_name: redis-hitl
+    command:
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --maxmemory-policy
+      - noeviction
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 5s
+    networks:
+      - llm-net
+    dns: *airgap-dns
+    restart: unless-stopped
+
+  inference-gateway:
+    build:
+      context: .
+      dockerfile: services/inference-gateway/Dockerfile
+    image: inference-gateway:local
+    pull_policy: never
+    container_name: inference-gateway
+    environment:
+      <<: *core-environment
+      UPSTREAM_BASE_URL: http://host.docker.internal:1234
+      POSTGRES_OPS_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/ops
+      MODEL_ALLOWLIST: ${MODEL_ALLOWLIST:?Set MODEL_ALLOWLIST to one or more approved LM Studio model IDs}
+      UPSTREAM_TIMEOUT_S: ${UPSTREAM_TIMEOUT_S:-180}
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    depends_on:
+      <<: [*postgres-health-dependency, *qdrant-health-dependency]
+    ports:
+      - 127.0.0.1:4321:4321
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4321/health', timeout=4)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - llm-net
+    dns: *airgap-dns
     restart: unless-stopped
 
   langgraph-orchestrator:
     build:
       context: .
       dockerfile: services/langgraph-orchestrator/Dockerfile
-    image: langgraph-orchestrator:latest
+    image: langgraph-orchestrator:hardened
+    pull_policy: never
     container_name: langgraph-orchestrator
     environment:
-      - QDRANT_URI=http://qdrant:6333
-      - REDIS_URL=redis://redis-cache:6379/0
-      - LM_STUDIO_BASE_URL=http://host.docker.internal:4321
-      - PYTHONUNBUFFERED=1
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    networks:
-      - llm-net
+      <<: *core-environment
+      QDRANT_URI: http://qdrant:6333
+      QDRANT_NARRATIVE_ALIAS: narrative_active
+      QDRANT_NARRATIVE_BOOTSTRAP_COLLECTION: primary_narrative
+      REDIS_URL: redis://redis-hitl:6379/0
+      INFERENCE_GATEWAY_URL: http://inference-gateway:4321
+      POSTGRES_LANGGRAPH_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/langgraph
+      POSTGRES_OPS_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/ops
+      LANGGRAPH_STRICT_MSGPACK: "true"
+      PYTHONUNBUFFERED: "1"
     depends_on:
+      postgres:
+        condition: service_healthy
       qdrant:
         condition: service_healthy
-      redis-cache:
+      redis-hitl:
+        condition: service_healthy
+      inference-gateway:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8100/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8100/health', timeout=4)"]
       interval: 10s
       timeout: 5s
-      retries: 6
-      start_period: 20s
-    restart: unless-stopped
-
-  kokoro-tts:
-    image: ghcr.io/remsky/kokoro-fastapi-cpu:latest
-    container_name: kokoro-tts
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      retries: 10
+      start_period: 25s
     networks:
       - llm-net
+    dns: *airgap-dns
     restart: unless-stopped
 
-  ha-mcp:
-    image: zorak1103/ha-mcp:latest
-    container_name: ha-mcp
-    command: ["--port", "8080"]
+  pipelines:
+    image: ghcr.io/open-webui/pipelines@sha256:b48e9bc338ce2be0acfbeff01810db72408a12f07739f9e3879c1f2b00952d6e
+    pull_policy: never
+    container_name: hardened-pipelines
     environment:
-      - ENABLE_TOOL_SEARCH=true
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      <<: *core-environment
+      PIPELINES_API_KEY: ${PIPELINES_API_KEY:?Set PIPELINES_API_KEY in the operator environment}
+      LANGGRAPH_URL: http://langgraph-orchestrator:8100
+    volumes:
+      - ./pipelines/langgraph_router.py:/app/pipelines/langgraph_router.py:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      langgraph-orchestrator:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9099/ >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
     networks:
       - llm-net
+    dns: *airgap-dns
     restart: unless-stopped
 
-  calendar-db:
-    image: postgres:15-alpine
-    container_name: calendar-db
+  open-webui:
+    image: open-webui:0.9.6@sha256:2ee1870d76187136f5f8620ecb7d13b36113098ad8b209852ab66d089486ca20
+    pull_policy: never
+    container_name: open-webui
+    environment:
+      <<: *core-environment
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/open_webui
+      OPENAI_API_BASE_URL: http://pipelines:9099/v1
+      OPENAI_API_BASE_URLS: http://pipelines:9099/v1
+      OPENAI_API_KEYS: ${PIPELINES_API_KEY}
+      ENABLE_OPENAI_API: "true"
+      ENABLE_OLLAMA_API: "false"
+      ENABLE_DIRECT_CONNECTIONS: "false"
+      ENABLE_WEB_SEARCH: "false"
+      ENABLE_PERSISTENT_CONFIG: "true"
+      ENABLE_WEBSOCKET_SUPPORT: "false"
+      ENABLE_STAR_SESSIONS_MIDDLEWARE: "false"
+      ENABLE_OTEL: "false"
+      ENABLE_OTEL_TRACES: "false"
+      ENABLE_OTEL_METRICS: "false"
+      ENABLE_OTEL_LOGS: "false"
+      VECTOR_DB: qdrant
+      QDRANT_URI: http://qdrant:6333
+      WEBUI_SECRET_KEY: ${WEBUI_SECRET_KEY:?Set WEBUI_SECRET_KEY in the operator environment}
+      UVICORN_WORKERS: "1"
+      SCARF_NO_ANALYTICS: "true"
+      DO_NOT_TRACK: "true"
+      ANONYMIZED_TELEMETRY: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      inference-gateway:
+        condition: service_healthy
+      langgraph-orchestrator:
+        condition: service_healthy
+      pipelines:
+        condition: service_healthy
+    ports:
+      - 127.0.0.1:8080:8080
+    volumes:
+      - ./data/open-webui:/app/backend/data
+    networks:
+      - llm-net
+    dns: *airgap-dns
+    restart: unless-stopped
+
+  searxng:
+    profiles: [offline-tools]
+    image: searxng/searxng@sha256:d137e9b7877b7982c5e8ccf878fda0a05d3c8564ebace7f66424a5a19a3c29d9
+    pull_policy: never
+    container_name: searxng
+    volumes:
+      - ./data/searxng:/etc/searxng
+    networks:
+      - llm-net
+    dns: *airgap-dns
+    restart: unless-stopped
+
+  crawl4ai:
+    profiles: [offline-tools]
+    image: unclecode/crawl4ai@sha256:b33e98fba44182409a99a84db655c152344be710e3bd9e97079004375a90148a
+    pull_policy: never
+    container_name: crawl4ai
+    shm_size: 1g
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U calendar -d calendar_db"]
-      interval: 10s
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:11235/health >/dev/null || exit 1"]
+      interval: 15s
       timeout: 5s
       retries: 5
-    environment:
-      - POSTGRES_USER=calendar
-      - POSTGRES_PASSWORD=calendar_secure_pass
-      - POSTGRES_DB=calendar_db
-    volumes:
-      - calendar-db-data:/var/lib/postgresql/data
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      start_period: 20s
     networks:
       - llm-net
-    restart: unless-stopped
-
-  calendar-mcp:
-    image: hdn179/calendar-mcp:latest
-    container_name: calendar-mcp
-    depends_on:
-      calendar-db:
-        condition: service_healthy
-    environment:
-      - DB_POSTGRES_URL=postgresql://calendar:[REDACTED]@calendar-db:5432/calendar_db
-      - CALENDAR_MCP_JWT_SECRET_KEY=my_secure_secret_123
-    volumes:
-      - calendar-mcp-data:/app/data
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    networks:
-      - llm-net
-    restart: unless-stopped
-
-  tor-gateway:
-    image: dperson/torproxy
-    container_name: tor-gateway
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    networks:
-      - llm-net
-    cap_add:
-      - NET_ADMIN
+    dns: *airgap-dns
     restart: unless-stopped
 
   browserless:
-    image: browserless/chrome:latest
+    profiles: [offline-tools]
+    image: browserless/chrome@sha256:57d19e414d9fe4ae9d2ab12ba768c97f38d51246c5b31af55a009205c136012f
+    pull_policy: never
     container_name: browserless
-    network_mode: "service:tor-gateway"
     environment:
-      - CONCURRENT=10
-      - QUEUED=20
-      - TIMEOUT=60000
+      CONCURRENT: "1"
+      QUEUED: "4"
+      TIMEOUT: "60000"
     shm_size: 2g
-    restart: unless-stopped
-
-  redis-cache:
-    image: redis:alpine
-    container_name: redis-cache
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     networks:
       - llm-net
-    ports:
-      - "6379:6379"
+    dns: *airgap-dns
     restart: unless-stopped
 
   deep-web-mcp:
-    build: ./deep-web-mcp
+    profiles: [offline-tools]
+    build:
+      context: .
+      dockerfile: deep-web-mcp/Dockerfile
+    image: deep-web-mcp:hardened
+    pull_policy: never
     container_name: deep-web-mcp
+    environment:
+      <<: *core-environment
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/deep_web
+      AES_SECRET_KEY: ${AES_SECRET_KEY:?Set AES_SECRET_KEY in the operator environment}
+      ALLOWED_TARGET_HOSTS: ${ALLOWED_TARGET_HOSTS:-crawl4ai,searxng,browserless}
     depends_on:
-      redis-cache:
+      postgres:
         condition: service_healthy
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      qdrant:
+        condition: service_healthy
+      crawl4ai:
+        condition: service_healthy
     networks:
       - llm-net
-    environment:
-      - REDIS_URL=redis://redis-cache:6379/0
-      - DATABASE_URL=sqlite:///./data/auth_vault.db
-      - AES_SECRET_KEY=${AES_SECRET_KEY}
-      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY}
-      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY}
-      - LANGFUSE_HOST=${LANGFUSE_HOST}
-    volumes:
-      - ./data/deep-web-mcp:/app/data
+    dns: *airgap-dns
     restart: unless-stopped
 
-  # ---------------------------------------------------------------------------
-  # vram-arbiter
-  # Non-blocking asyncio VRAM hardware arbiter daemon.
-  #
-  # Polls the LM Studio /v1/models endpoint at a strict 1000 ms interval and
-  # enforces a VRAM ceiling of 11.4 GiB (12 240 537 395 bytes) by applying
-  # a TTL=300 cache eviction on the LRU model via the lms CLI when the
-  # ceiling is met or exceeded.
-  #
-  # The service is intentionally lightweight (python:3.11-slim + aiohttp only)
-  # and runs as a non-root user.  It does NOT depend on ClickHouse or Langfuse
-  # for its core operation, but the service_healthy gate on redis-cache ensures
-  # the bridge network is fully initialised before the aiohttp connection pool
-  # begins its first polling tick.
-  # ---------------------------------------------------------------------------
-  vram-arbiter:
-    build:
-      context: .
-      dockerfile: Dockerfile.arbiter
-    image: vram-arbiter:latest
-    container_name: vram-arbiter
-    restart: unless-stopped
-
-    environment:
-      # ── Core arbiter parameters ──────────────────────────────────────────
-      # VRAM_CEILING: 11.4 GiB in bytes (11.4 × 1024³)
-      - VRAM_CEILING=12240537395
-      # Per-model VRAM footprint estimate in whole GB (heuristic; no VRAM API)
-      - VRAM_PER_MODEL_ESTIMATE_GB=5
-      # LM Studio inference endpoint — resolves to the host machine via
-      # host.docker.internal (bridge network extra_hosts mapping below)
-      - LM_STUDIO_API=http://host.docker.internal:4321/api/v1/models
-      # Unbuffered output so docker logs streams in real-time
-      - PYTHONUNBUFFERED=1
-
-    extra_hosts:
-      # Maps host.docker.internal → host-gateway so the aiohttp connection
-      # pool can reach LM Studio running on the Windows host without WAN egress
-      - "host.docker.internal:host-gateway"
-
-    networks:
-      - llm-net
-
-    # The arbiter's aiohttp pool issues its first request on the first tick.
-    # Waiting for redis-cache to be running (not merely started) ensures the
-    # bridge network routes are fully established and no frames are dropped
-    # during cold-boot initialisation.
-    depends_on:
-      redis-cache:
-        condition: service_healthy
-
-    # Logging: JSON format for structured log aggregation; cap at 10 MB.
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  # ---------------------------------------------------------------------------
-  # pytest-arbiter (one-shot smoke-test runner)
-  # Run with:  docker compose run --rm pytest-arbiter
-  # Executes the full test_vram_and_race_conditions.py suite offline.
-  # ---------------------------------------------------------------------------
-  pytest-arbiter:
-    build:
-      context: .
-      dockerfile: Dockerfile.arbiter
-    image: vram-arbiter:latest
-    container_name: pytest-arbiter
-    profiles:
-      - test                      # only active with --profile test flag
-    entrypoint: ["python", "-m", "pytest"]
-    command:
-      - "tests/test_vram_and_race_conditions.py"
-      - "-v"
-      - "--tb=short"
-      - "--asyncio-mode=auto"
-    environment:
-      - VRAM_CEILING=12240537395
-      - VRAM_PER_MODEL_ESTIMATE_GB=5
-      - LM_STUDIO_API=http://host.docker.internal:4321/v1/models
-      - PYTHONUNBUFFERED=1
-    volumes:
-      # Mount the full project so pytest can resolve the vram_arbiter_daemon module
-      - .:/app
-    working_dir: /app
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    networks:
-      - llm-net
-
-  # ---------------------------------------------------------------------------
-  # monitor-daemon
-  # CPU-bound web change detection and semantic vector drift monitor.
-  #
-  # Uses sentence-transformers/all-MiniLM-L6-v2 on device=cpu only.
-  # Never allocates VRAM — PCIe bus and GPU are reserved exclusively
-  # for the primary LM Studio inference model.
-  #
-  # Exposes:
-  #   POST /monitor/evaluate  — full drift evaluation cycle
-  #   GET  /monitor/status    — daemon health and config summary
-  #   GET  /monitor/history   — last N evaluation records
-  #
-  # Depends on:
-  #   qdrant        — vector storage (canon_master_space)
-  #   deep-web-mcp  — sanitized content extraction
-  #   langgraph-orchestrator — alert endpoint target on the internal bridge
-  # ---------------------------------------------------------------------------
   monitor-daemon:
+    profiles: [offline-tools]
     build:
       context: .
       dockerfile: Dockerfile.monitor
-    image: monitor-daemon:latest
+    image: monitor-daemon:hardened
+    pull_policy: never
     container_name: monitor-daemon
-    restart: unless-stopped
-
-    ports:
-      - "127.0.0.1:19000:9000"     # localhost-only; not exposed to host network
-
     environment:
-      # ── Qdrant ────────────────────────────────────────────────────────────
-      - QDRANT_URL=http://qdrant:6333
-      - QDRANT_COLLECTION=canon_master_space
-      # ── deep-web-mcp ──────────────────────────────────────────────────────
-      - MCP_URL=http://deep-web-mcp:8000
-      # ── LangGraph orchestrator (standalone service on llm-net) ────────────
-      - ORCHESTRATOR_URL=http://langgraph-orchestrator:8100
-      # ── Drift detection ───────────────────────────────────────────────────
-      - DRIFT_THRESHOLD=0.15
-      # ── CPU embedding model ───────────────────────────────────────────────
-      - EMBED_MODEL_NAME=sentence-transformers/all-MiniLM-L6-v2
-      # Bound to 4 threads to not starve the host LM Studio inference process
-      - CPU_THREADS=4
-      # ── Timeout knobs ─────────────────────────────────────────────────────
-      - MCP_TIMEOUT_S=90
-      - QDRANT_TIMEOUT_S=10
-      - ALERT_TIMEOUT_S=30
-      # ── Runtime ───────────────────────────────────────────────────────────
-      - PYTHONUNBUFFERED=1
-      - TRANSFORMERS_OFFLINE=1     # model pre-baked into image layer
-      - HF_DATASETS_OFFLINE=1
-
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION: monitor_active
+      MCP_URL: http://deep-web-mcp:8000
+      ORCHESTRATOR_URL: http://langgraph-orchestrator:8100
+      POSTGRES_OPS_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/ops
+      TRANSFORMERS_OFFLINE: "1"
+      HF_DATASETS_OFFLINE: "1"
     depends_on:
+      postgres:
+        condition: service_healthy
       qdrant:
         condition: service_healthy
       deep-web-mcp:
         condition: service_started
-
+    ports:
+      - 127.0.0.1:19000:9000
     networks:
       - llm-net
+    dns: *airgap-dns
+    restart: unless-stopped
 
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+  state-migration:
+    profiles: [migration]
+    build:
+      context: .
+      dockerfile: migration/Dockerfile
+    image: state-migration:local
+    pull_policy: never
+    environment:
+      OPEN_WEBUI_POSTGRES_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/open_webui
+      DEEP_WEB_POSTGRES_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/deep_web
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_NARRATIVE_ALIAS: narrative_active
+      QDRANT_NARRATIVE_BOOTSTRAP_COLLECTION: primary_narrative
+    volumes:
+      - ./data:/migration-data:ro
+      - ./backups:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    networks:
+      - llm-net
+    dns: *airgap-dns
+
+  qdrant-alias-cutover:
+    profiles: [alias-cutover]
+    image: state-migration:local
+    pull_policy: never
+    entrypoint: ["python", "/app/migration/qdrant_alias_cutover.py"]
+    environment:
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_ALIAS: ${QDRANT_ALIAS:-narrative_active}
+      QDRANT_TARGET_COLLECTION: ${QDRANT_TARGET_COLLECTION:-}
+      QDRANT_SNAPSHOT_CURRENT: ${QDRANT_SNAPSHOT_CURRENT:-true}
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    networks:
+      - llm-net
+    dns: *airgap-dns
 
 networks:
   llm-net:
+    name: llm-net
     driver: bridge
+    driver_opts:
+      com.docker.network.bridge.enable_ip_masquerade: "false"
 
 volumes:
-  calendar-mcp-data:
-  calendar-db-data:
+  postgres-data:

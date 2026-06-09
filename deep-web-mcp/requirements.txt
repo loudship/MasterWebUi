@@ -3,11 +3,10 @@ fastmcp
 sqlalchemy
 passlib
 cryptography
-redis
 pydantic
 uvicorn
 httpx
 sse-starlette
 crawl4ai
 playwright
-langfuse
+psycopg[binary]==3.3.2

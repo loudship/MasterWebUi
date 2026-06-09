@@ -17,53 +17,16 @@
 #   docker build -f Dockerfile.monitor -t monitor-daemon:latest .
 # =============================================================================
 
-FROM python:3.11-slim AS base
+FROM monitor-daemon@sha256:f979055cc5dedfee9d523a380a08c46e85201099b130fd394fe8bbe2f3cab5ed
 
-# ---------------------------------------------------------------------------
-# System dependencies
-# ---------------------------------------------------------------------------
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-      gcc \
-      libffi-dev \
-      curl \
- && rm -rf /var/lib/apt/lists/*
-
-# ---------------------------------------------------------------------------
-# Python dependencies
-# ---------------------------------------------------------------------------
 WORKDIR /app
-
-COPY requirements.monitor.txt ./requirements.monitor.txt
-RUN pip install --no-cache-dir -r requirements.monitor.txt
-
-# ---------------------------------------------------------------------------
-# Pre-download the embedding model into the image layer so the container
-# starts without WAN access (air-gapped operation).
-# The model is ~90 MB and stored in the HuggingFace cache.
-# ---------------------------------------------------------------------------
-ENV SENTENCE_TRANSFORMERS_HOME=/app/.model_cache \
-    TRANSFORMERS_OFFLINE=0
-
-RUN python -c "\
-from sentence_transformers import SentenceTransformer; \
-SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2', device='cpu'); \
-print('Model pre-cached successfully.')"
-
-# Switch to offline mode after baking — no WAN calls at runtime
-ENV TRANSFORMERS_OFFLINE=1 \
-    HF_DATASETS_OFFLINE=1
-
-# ---------------------------------------------------------------------------
-# Application source
-# ---------------------------------------------------------------------------
 COPY monitor_daemon.py ./monitor_daemon.py
 
 # ---------------------------------------------------------------------------
 # Runtime environment defaults (all overridable via docker-compose)
 # ---------------------------------------------------------------------------
 ENV QDRANT_URL="http://qdrant:6333" \
-    QDRANT_COLLECTION="canon_master_space" \
+    QDRANT_COLLECTION="monitor_active" \
     MCP_URL="http://deep-web-mcp:8000" \
     ORCHESTRATOR_URL="http://langgraph-orchestrator:8100" \
     DRIFT_THRESHOLD="0.15" \
@@ -75,10 +38,6 @@ ENV QDRANT_URL="http://qdrant:6333" \
     PYTHONUNBUFFERED="1" \
     PYTHONDONTWRITEBYTECODE="1"
 
-# ---------------------------------------------------------------------------
-# Non-root user
-# ---------------------------------------------------------------------------
-RUN addgroup --system monitor && adduser --system --ingroup monitor monitor
 USER monitor
 
 # ---------------------------------------------------------------------------

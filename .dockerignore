@@ -1,0 +1,14 @@
+.git
+.env
+.pytest_cache
+__pycache__
+*.pyc
+backups
+data
+docs
+langfuse-skills
+logs
+node_modules
+open-webui-0.9.6
+package-lock.json
+tmp_retrieval

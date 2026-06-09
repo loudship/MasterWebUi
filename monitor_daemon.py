@@ -15,7 +15,7 @@ Core pipeline (per evaluation cycle)
      → receive sanitized Markdown payload
   2. Embed payload strictly on CPU threads (all-MiniLM-L6-v2 via
      sentence-transformers with device="cpu")
-  3. Query Qdrant canon_master_space for previously stored vector
+  3. Query the configured Qdrant alias for the previously stored vector
      keyed by SHA-256(url)
   4. Compute cosine distance between new and stored vectors
   5a. Distance < DRIFT_THRESHOLD → no action, log unchanged
@@ -70,7 +70,7 @@ logger = logging.getLogger("monitor_daemon")
 
 # Qdrant REST endpoint — uses Docker internal alias
 QDRANT_URL: str     = os.getenv("QDRANT_URL",     "http://qdrant:6333")
-COLLECTION: str     = os.getenv("QDRANT_COLLECTION", "canon_master_space")
+COLLECTION: str     = os.getenv("QDRANT_COLLECTION", "monitor_active")
 
 # deep-web-mcp service endpoint
 MCP_URL: str        = os.getenv("MCP_URL",         "http://deep-web-mcp:8000")
@@ -284,34 +284,19 @@ async def _qdrant_upsert(
             )
 
 
-async def _ensure_collection(session: aiohttp.ClientSession, dim: int) -> None:
-    """
-    Ensure COLLECTION exists in Qdrant with Cosine distance.
-    Creates it if missing (e.g. on first daemon boot).
-    """
-    check_url = f"{QDRANT_URL}/collections/{COLLECTION}"
-    async with session.get(check_url, timeout=aiohttp.ClientTimeout(total=QDRANT_TIMEOUT_S)) as resp:
-        if resp.status == 200:
-            return
-        if resp.status != 404:
-            return   # non-fatal; upsert will surface the error if needed
-
-    create_body = {
-        "vectors": {
-            "size":     dim,
-            "distance": "Cosine",
-        }
-    }
-    async with session.put(
-        check_url,
-        json=create_body,
+async def _require_collection_alias(session: aiohttp.ClientSession) -> None:
+    """Fail closed unless the configured Qdrant alias already exists."""
+    async with session.get(
+        f"{QDRANT_URL}/aliases",
         timeout=aiohttp.ClientTimeout(total=QDRANT_TIMEOUT_S),
     ) as resp:
-        if resp.status in (200, 201):
-            logger.info(
-                "[MONITOR] Qdrant collection %r created (dim=%d, Cosine).",
-                COLLECTION, dim,
-            )
+        if resp.status != 200:
+            raise RuntimeError(f"Qdrant alias lookup returned HTTP {resp.status}.")
+        aliases = (await resp.json()).get("result", {}).get("aliases", [])
+    if not any(alias.get("alias_name") == COLLECTION for alias in aliases):
+        raise RuntimeError(
+            f"Required Qdrant alias {COLLECTION!r} is absent; run the migration/bootstrap job."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -321,7 +306,6 @@ async def _ensure_collection(session: aiohttp.ClientSession, dim: int) -> None:
 async def _extract_via_mcp(
     session:   aiohttp.ClientSession,
     url:       str,
-    use_tor:   bool,
     thread_id: str,
 ) -> str:
     """
@@ -342,13 +326,9 @@ async def _extract_via_mcp(
         "url":              url,
         "thread_id":        thread_id,
         "session_required": False,
-        "use_tor_network":  use_tor,
     }
 
-    logger.info(
-        "[MONITOR] Invoking deep-web-mcp extraction — url=%r  tor=%s",
-        url, use_tor,
-    )
+    logger.info("[MONITOR] Invoking deep-web-mcp extraction — url=%r", url)
 
     # Use the synchronous POST endpoint for simplicity (avoids SSE parsing overhead)
     # The daemon is not latency-critical — blocking on the extraction result is acceptable.
@@ -512,16 +492,13 @@ class EvaluateRequest(BaseModel):
     Fields
     ------
     url : str
-        Target URL or .onion address to monitor.
-    use_tor : bool
-        Route the deep-web-mcp extraction through the Tor HTTP proxy.
+        Allowed internal target URL to monitor.
     thread_id : str
         Session thread ID forwarded to deep-web-mcp for credential lookup.
     force_baseline : bool
         If True, always treat as a new baseline (overwrite existing vector).
     """
     url:            str            = Field(..., description="Target URL to monitor.")
-    use_tor:        bool           = Field(False, description="Use Tor proxy for extraction.")
     thread_id:      str            = Field("monitor-daemon", description="Session thread ID.")
     force_baseline: bool           = Field(False, description="Force baseline re-initialization.")
 
@@ -550,7 +527,7 @@ async def evaluate(req: EvaluateRequest) -> EvaluateResponse:
     --------
     1. Extract sanitized Markdown from target URL via deep-web-mcp.
     2. Generate CPU embedding (all-MiniLM-L6-v2, device=cpu, no VRAM).
-    3. Query Qdrant canon_master_space for previously stored vector.
+    3. Query the configured Qdrant alias for the previously stored vector.
     4. Compute cosine distance.
     5a. 404 (first seen) → baseline init, store vector, exit without alert.
     5b. distance < DRIFT_THRESHOLD → log unchanged, exit.
@@ -565,8 +542,8 @@ async def evaluate(req: EvaluateRequest) -> EvaluateResponse:
     point_id  = _url_point_id(req.url)
 
     logger.info(
-        "[MONITOR] Evaluation started — eval_id=%s  url=%r  tor=%s",
-        eval_id, req.url, req.use_tor,
+        "[MONITOR] Evaluation started — eval_id=%s  url=%r",
+        eval_id, req.url,
     )
 
     connector = aiohttp.TCPConnector(limit=8, ttl_dns_cache=300)
@@ -577,7 +554,6 @@ async def evaluate(req: EvaluateRequest) -> EvaluateResponse:
             content = await _extract_via_mcp(
                 session=session,
                 url=req.url,
-                use_tor=req.use_tor,
                 thread_id=req.thread_id,
             )
         except EgressTimeoutBreachError as exc:
@@ -656,11 +632,17 @@ async def evaluate(req: EvaluateRequest) -> EvaluateResponse:
         embed_dim = len(new_vector)
         logger.debug("[MONITOR] Vector generated — dim=%d  eval_id=%s", embed_dim, eval_id)
 
-        # Ensure the target collection exists with the correct dimensionality
+        # Require an operator-created alias; request-time collection creation is forbidden.
         try:
-            await _ensure_collection(session, embed_dim)
+            await _require_collection_alias(session)
         except Exception as exc:
-            logger.warning("[MONITOR] _ensure_collection non-fatal: %s", exc)
+            logger.error("[MONITOR] Qdrant alias requirement failed: %s", exc)
+            return EvaluateResponse(
+                eval_id=eval_id,
+                url=req.url,
+                outcome="error",
+                message=str(exc),
+            )
 
         # ── Step 3: Qdrant lookup ──────────────────────────────────────────
         existing_point = None

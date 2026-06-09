@@ -19,33 +19,25 @@ Core behaviours
    agent persona signature (looks for "Continuity_Checker" or "World_Simulator"
    as a substring of the system content).
 
-2. Embeds the user message text via a lightweight local embedding call
-   (LM Studio /v1/embeddings) and queries the appropriate Qdrant collection.
+2. Embeds the user message text through the canonical inference gateway and
+   queries the appropriate Qdrant alias.
 
 3. Injects retrieved context blocks as an IMMUTABLE, ANCHORED block prepended
    to the very first position of the system message content — preserving LM
    Studio KV-cache alignment.  The injected block is wrapped in clear sentinel
    markers so downstream nodes can identify it without regex fragility.
 
-4. Exposes a `flush_simulation_cache` tool endpoint (callable via Open-WebUI
-   tool invocation) that hard-wipes simulation_volatile_space to zero records
-   when the World_Simulator persona is active.
+4. Refuses runtime collection reset operations; aliases are maintenance-owned.
 
-5. On ANY Qdrant error (connection timeout, HTTP failure, dimension mismatch),
-   logs a structured warning to Langfuse and passes the body through unmodified
-   — the inference chain is NEVER dropped.
+5. On ANY Qdrant error, logs locally and passes the body through unmodified.
 
 Valve parameters (configurable in Open-WebUI admin UI)
 ------------------------------------------------------
   QDRANT_URL            : Qdrant REST base URL
-  EMBEDDING_URL         : LM Studio embeddings endpoint
+  EMBEDDING_URL         : Canonical gateway embeddings endpoint
   SIMILARITY_THRESHOLD  : Cosine similarity floor (0.0–1.0)
   MAX_CONTEXT_RESULTS   : Max vector hits to inject per turn
   QDRANT_TIMEOUT_S      : Seconds before Qdrant calls are abandoned
-  LANGFUSE_HOST         : Langfuse trace host (optional)
-  LANGFUSE_PUBLIC_KEY   : Langfuse public key (optional)
-  LANGFUSE_SECRET_KEY   : Langfuse secret key (optional)
-  ENABLE_LANGFUSE       : Master switch for Langfuse tracing
 """
 
 from __future__ import annotations
@@ -54,8 +46,6 @@ import asyncio
 import json
 import logging
 import os
-import time
-import uuid
 from typing import Any, Callable, List, Optional, Union, Generator, Iterator
 
 import aiohttp
@@ -75,8 +65,8 @@ logging.basicConfig(
 # Collection identifiers (immutable — never overridden via valves)
 # ---------------------------------------------------------------------------
 
-COLLECTION_CANON: str    = "canon_master_space"        # strict immutable canon
-COLLECTION_VOLATILE: str = "simulation_volatile_space" # per-run volatile sim space
+COLLECTION_CANON: str = os.environ.get("QDRANT_CANON_ALIAS", "narrative_active")
+COLLECTION_VOLATILE: str = os.environ.get("QDRANT_SIMULATION_ALIAS", "simulation_active")
 
 # Persona signature strings (substring match against system message content)
 PERSONA_CONTINUITY_CHECKER: str = "Continuity_Checker"
@@ -118,13 +108,13 @@ class Pipeline:
             default=os.environ.get("QDRANT_URI", "http://localhost:6333"),
             description="Qdrant REST base URL (local port 6333).",
         )
-        # LM Studio embeddings endpoint (local bridge)
+        # Canonical gateway embeddings endpoint
         EMBEDDING_URL: str = Field(
             default=os.environ.get(
-                "LM_STUDIO_BASE_URL",
-                "http://host.docker.internal:1234",
+                "INFERENCE_GATEWAY_URL",
+                "http://inference-gateway:4321",
             ) + "/v1/embeddings",
-            description="Local LM Studio /v1/embeddings endpoint.",
+            description="Canonical gateway /v1/embeddings endpoint.",
         )
         # Cosine similarity floor — hits below this score are discarded
         SIMILARITY_THRESHOLD: float = Field(
@@ -140,23 +130,6 @@ class Pipeline:
         QDRANT_TIMEOUT_S: float = Field(
             default=8.0,
             description="Timeout in seconds for Qdrant and embedding HTTP calls.",
-        )
-        # Langfuse tracing (optional; silently disabled if keys are empty)
-        LANGFUSE_HOST: str = Field(
-            default=os.environ.get("LANGFUSE_HOST", "http://localhost:3000"),
-            description="Langfuse server host for structured warning traces.",
-        )
-        LANGFUSE_PUBLIC_KEY: str = Field(
-            default=os.environ.get("LANGFUSE_PUBLIC_KEY", ""),
-            description="Langfuse public API key.",
-        )
-        LANGFUSE_SECRET_KEY: str = Field(
-            default=os.environ.get("LANGFUSE_SECRET_KEY", ""),
-            description="Langfuse secret API key.",
-        )
-        ENABLE_LANGFUSE: bool = Field(
-            default=bool(os.environ.get("LANGFUSE_PUBLIC_KEY", "")),
-            description="Master switch for Langfuse warning traces.",
         )
         # Vector dimension for the active embedding model
         EMBED_DIM: int = Field(
@@ -251,10 +224,11 @@ class Pipeline:
                 collection=collection,
             )
         except Exception as exc:
-            await self._langfuse_warn(
-                message=f"Vector retrieval failed for persona={persona!r}, collection={collection!r}",
-                error=exc,
-                user_id=(__user__ or {}).get("id", "unknown"),
+            logger.warning(
+                "[MEMORY ROUTER] Vector retrieval failed for persona=%r alias=%r: %s",
+                persona,
+                collection,
+                exc,
             )
             return body   # graceful pass-through — never drop the chain
 
@@ -292,93 +266,13 @@ class Pipeline:
 
     async def flush_simulation_cache(self) -> str:
         """
-        Truncate simulation_volatile_space to zero records.
-
-        This endpoint is intentionally exposed as a tool so the World_Simulator
-        agent can programmatically wipe its volatile scratchpad between runs
-        without requiring a full collection recreate cycle.
-
-        Returns a structured JSON status string.
+        Refuse runtime collection lifecycle mutation.
         """
-        logger.warning(
-            "[MEMORY ROUTER] flush_simulation_cache invoked — "
-            "truncating %r to zero records.",
-            COLLECTION_VOLATILE,
-        )
-        try:
-            timeout  = aiohttp.ClientTimeout(total=self.valves.QDRANT_TIMEOUT_S)
-            session  = await self._get_session()
-
-            # Qdrant does not have a truncate endpoint; the idiomatic approach
-            # is delete-by-filter with a match_all condition, which requires
-            # Qdrant ≥ 1.7.  We use the collection recreate approach for
-            # guaranteed atomicity and backwards compatibility.
-
-            # 1. Get current collection config
-            async with session.get(
-                f"{self.valves.QDRANT_URL}/collections/{COLLECTION_VOLATILE}",
-                timeout=timeout,
-            ) as resp:
-                if resp.status != 200:
-                    raise RuntimeError(
-                        f"GET /collections/{COLLECTION_VOLATILE} returned HTTP {resp.status}"
-                    )
-                coll_info = await resp.json()
-                vector_cfg = (
-                    coll_info.get("result", {})
-                              .get("config", {})
-                              .get("params", {})
-                              .get("vectors", {})
-                )
-
-            # 2. Delete the collection
-            async with session.delete(
-                f"{self.valves.QDRANT_URL}/collections/{COLLECTION_VOLATILE}",
-                timeout=timeout,
-            ) as resp:
-                if resp.status not in (200, 204):
-                    raise RuntimeError(
-                        f"DELETE /collections/{COLLECTION_VOLATILE} returned HTTP {resp.status}"
-                    )
-
-            # 3. Recreate with identical vector config
-            create_payload = {
-                "vectors": vector_cfg or {
-                    "size":     self.valves.EMBED_DIM,
-                    "distance": "Cosine",
-                },
-            }
-            async with session.put(
-                f"{self.valves.QDRANT_URL}/collections/{COLLECTION_VOLATILE}",
-                json=create_payload,
-                timeout=timeout,
-            ) as resp:
-                if resp.status not in (200, 201):
-                    raise RuntimeError(
-                        f"PUT /collections/{COLLECTION_VOLATILE} returned HTTP {resp.status}"
-                    )
-
-            logger.info(
-                "[MEMORY ROUTER] flush_simulation_cache complete — "
-                "%r recreated empty.",
-                COLLECTION_VOLATILE,
-            )
-            return json.dumps({
-                "status":     "ok",
-                "collection": COLLECTION_VOLATILE,
-                "records":    0,
-                "message":    "Simulation volatile space flushed to zero records.",
-            })
-
-        except Exception as exc:
-            logger.error(
-                "[MEMORY ROUTER] flush_simulation_cache failed: %s", exc
-            )
-            return json.dumps({
-                "status":  "error",
-                "reason":  str(exc),
-                "message": "Flush operation failed — volatile space may be in inconsistent state.",
-            })
+        logger.warning("[MEMORY ROUTER] Runtime collection reset was denied.")
+        return json.dumps({
+            "status": "error",
+            "message": "Runtime collection reset is forbidden; use a staged alias cutover.",
+        })
 
     # =======================================================================
     # Private helpers
@@ -624,8 +518,7 @@ class Pipeline:
 
     async def _ensure_collection(self, collection_name: str) -> None:
         """
-        Verify that *collection_name* exists in Qdrant with Cosine distance.
-        Creates it if missing.  Uses EMBED_DIM for vector size.
+        Verify that the configured alias resolves in Qdrant.
         """
         session = await self._get_session()
         timeout = aiohttp.ClientTimeout(total=self.valves.QDRANT_TIMEOUT_S)
@@ -644,27 +537,10 @@ class Pipeline:
                     f"Unexpected status {resp.status} checking {collection_name!r}"
                 )
 
-        # Collection missing — create it
-        create_payload = {
-            "vectors": {
-                "size":     self.valves.EMBED_DIM,
-                "distance": "Cosine",
-            }
-        }
-        async with session.put(
-            f"{self.valves.QDRANT_URL}/collections/{collection_name}",
-            json=create_payload,
-            timeout=timeout,
-        ) as resp:
-            if resp.status in (200, 201):
-                logger.info(
-                    "[MEMORY ROUTER] Collection %r created (dim=%d, Cosine).",
-                    collection_name, self.valves.EMBED_DIM,
-                )
-            else:
-                raise RuntimeError(
-                    f"Failed to create {collection_name!r}: HTTP {resp.status}"
-                )
+        raise RuntimeError(
+            f"Required Qdrant alias {collection_name!r} is absent; "
+            "run the migration/bootstrap or atomic cutover utility."
+        )
 
     # ── Session accessor ───────────────────────────────────────────────────
 
@@ -677,80 +553,3 @@ class Pipeline:
             connector     = aiohttp.TCPConnector(limit=8, ttl_dns_cache=300)
             self._session = aiohttp.ClientSession(connector=connector)
         return self._session
-
-    # ── Langfuse warning trace ─────────────────────────────────────────────
-
-    async def _langfuse_warn(
-        self,
-        message:  str,
-        error:    Exception,
-        user_id:  str = "unknown",
-    ) -> None:
-        """
-        Log a structured warning trace to Langfuse when vector retrieval fails.
-
-        If Langfuse is disabled (ENABLE_LANGFUSE=False) or unreachable, this
-        method silently returns — it must NEVER propagate an exception.
-
-        The warning is always emitted to the local logger regardless of
-        Langfuse availability.
-        """
-        full_msg = (
-            f"[MEMORY ROUTER] Vector retrieval warning — {message} | "
-            f"error={type(error).__name__}: {error}"
-        )
-        logger.warning(full_msg)
-
-        if not self.valves.ENABLE_LANGFUSE:
-            return
-        if not self.valves.LANGFUSE_PUBLIC_KEY or not self.valves.LANGFUSE_SECRET_KEY:
-            return
-
-        # Langfuse scores/events API: POST /api/public/events
-        trace_payload = {
-            "batch": [
-                {
-                    "id":        str(uuid.uuid4()),
-                    "type":      "trace-create",
-                    "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                    "body": {
-                        "name":     "qdrant_memory_router_warning",
-                        "userId":   user_id,
-                        "metadata": {
-                            "message":    message,
-                            "error_type": type(error).__name__,
-                            "error_msg":  str(error),
-                            "pipeline":   "qdrant_segregated_memory",
-                        },
-                        "tags": ["warning", "memory_router", "qdrant"],
-                        "level": "WARNING",
-                    },
-                }
-            ]
-        }
-
-        try:
-            session = await self._get_session()
-            import base64
-            credentials = base64.b64encode(
-                f"{self.valves.LANGFUSE_PUBLIC_KEY}:{self.valves.LANGFUSE_SECRET_KEY}".encode()
-            ).decode()
-            async with session.post(
-                f"{self.valves.LANGFUSE_HOST}/api/public/ingestion",
-                json=trace_payload,
-                headers={
-                    "Authorization": f"Basic {credentials}",
-                    "Content-Type":  "application/json",
-                },
-                timeout=aiohttp.ClientTimeout(total=5.0),
-            ) as resp:
-                if resp.status not in (200, 201, 202, 207):
-                    logger.debug(
-                        "[MEMORY ROUTER] Langfuse trace returned HTTP %d (non-fatal).",
-                        resp.status,
-                    )
-        except Exception as lf_exc:
-            # Langfuse failure is always non-fatal
-            logger.debug(
-                "[MEMORY ROUTER] Langfuse trace suppressed (non-fatal): %s", lf_exc
-            )

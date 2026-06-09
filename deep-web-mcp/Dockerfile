@@ -1,24 +1,14 @@
-FROM python:3.11-slim
+FROM open-webui-master-deep-web-mcp@sha256:7912a186a811339a946cad4fe3af2f2acb77adebe00e4951086dbf8f27d239db
 
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    curl \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
+COPY deep-web-mcp/requirements.offline.txt ./requirements.offline.txt
+COPY wheelhouse/deep-web-mcp /wheelhouse
+RUN pip install --no-cache-dir --no-index --find-links=/wheelhouse -r requirements.offline.txt \
+ && rm -rf /wheelhouse
 
-COPY requirements.txt .
+COPY deep-web-mcp/ ./
 
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Playwright dependencies
-RUN playwright install --with-deps chromium
-
-COPY . .
-
-# Expose FastAPI port
 EXPOSE 8000
 
-# Start server
 CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"]

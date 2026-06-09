@@ -15,9 +15,7 @@ Key behaviours
    - Iterates the decrypted auth array and injects each entry into the
      live browser context via `context.add_cookies()`.
 
-2. Tor SOCKS5 proxy routing:
-   - When `use_tor=True`, routes all traffic through
-     `socks5://tor-gateway:9050`.
+2. Failure containment:
    - On anti-bot trap / network-layer drop (`TimeoutError`, `Error`):
      aborts the page, closes the context, frees shared memory, and returns
      a standardised JSON error block.
@@ -27,8 +25,8 @@ Key behaviours
    - Progress callbacks update a shared asyncio.Event-backed registry so
      the SSE stream endpoint can read current completion percentages.
 
-4. No WAN dependency: all network traffic is routed through the local
-   Docker stack (Tor gateway, Browserless, redis-cache).
+4. No WAN dependency: Browserless is reachable only through the internal
+   Docker network.
 """
 
 from __future__ import annotations
@@ -52,9 +50,6 @@ logger = logging.getLogger(__name__)
 BROWSERLESS_WS: str = os.environ.get("BROWSERLESS_WS", "ws://browserless:3000")
 USE_BROWSERLESS: bool = os.environ.get("USE_BROWSERLESS", "true").lower() == "true"
 
-TOR_SOCKS_HOST: str = os.environ.get("TOR_SOCKS_HOST", "tor-gateway")
-TOR_SOCKS_PORT: int = int(os.environ.get("TOR_SOCKS_PORT", "9050"))
-
 # Page navigation timeout in milliseconds
 PAGE_TIMEOUT_MS: int = int(os.environ.get("PAGE_TIMEOUT_MS", "45000"))
 
@@ -69,7 +64,7 @@ def _nav_error_block(
     error_code: str = "NAVIGATION_TIMEOUT",
 ) -> dict:
     """
-    Standardised JSON error block returned on Tor network drops, anti-bot
+    Standardised JSON error block returned on network drops, anti-bot
     traps, or any navigation-layer failure.
     """
     return {
@@ -117,7 +112,6 @@ class PlaywrightExtractor:
     """
     Async Playwright-based web extraction engine with:
       - on_page_context_created lifecycle hook for session hydration
-      - Tor SOCKS5 proxy support
       - Anti-bot / network-drop error catching
       - Task-ID-based progress tracking
 
@@ -125,9 +119,8 @@ class PlaywrightExtractor:
     -----
     extractor = PlaywrightExtractor()
     result = await extractor.extract(
-        url="https://example.onion",
+        url="http://internal-service/resource",
         thread_id="user-abc",
-        use_tor=True,
     )
     """
 
@@ -144,7 +137,7 @@ class PlaywrightExtractor:
         """
         Fires before every primary page navigation command.
 
-        1. Queries the local SQLite auth vault via thread_id.
+        1. Queries the PostgreSQL auth vault via thread_id.
         2. Decrypts the auth payload (handled by database.decrypt_payload).
         3. Iterates the authorization array and injects each entry into
            the browser context via native cookie injection.
@@ -251,7 +244,6 @@ class PlaywrightExtractor:
         self,
         url:       str,
         thread_id: str,
-        use_tor:   bool = False,
         js_script: Optional[str] = None,
         on_progress: Optional[Callable[[int], None]] = None,
     ) -> dict:
@@ -263,7 +255,6 @@ class PlaywrightExtractor:
         ----------
         url       : Target URL.
         thread_id : Identifies the requesting user/session; used for auth lookup.
-        use_tor   : Route traffic through SOCKS5 Tor proxy when True.
         js_script : Optional JavaScript to evaluate on the page after load.
         on_progress: Optional callback(pct: int) invoked at each milestone.
 
@@ -295,17 +286,9 @@ class PlaywrightExtractor:
 
         _progress(0)
         logger.info(
-            "[EXTRACTOR] Starting extraction — task_id=%s  url=%r  use_tor=%s  thread_id=%r",
-            task_id, url, use_tor, thread_id,
+            "[EXTRACTOR] Starting extraction — task_id=%s  url=%r  thread_id=%r",
+            task_id, url, thread_id,
         )
-
-        # ── Proxy configuration ───────────────────────────────────────────
-        proxy_settings: Optional[dict] = None
-        if use_tor:
-            proxy_settings = {
-                "server": f"socks5://{TOR_SOCKS_HOST}:{TOR_SOCKS_PORT}",
-            }
-            logger.info("[EXTRACTOR] Tor SOCKS5 proxy enabled: %s", proxy_settings["server"])
 
         context = None
         page    = None
@@ -342,9 +325,6 @@ class PlaywrightExtractor:
                     "ignore_https_errors": True,
                     "java_script_enabled": True,
                 }
-                if proxy_settings:
-                    context_kwargs["proxy"] = proxy_settings
-
                 context = await browser.new_context(**context_kwargs)
 
                 # ── on_page_context_created lifecycle hook ────────────────
@@ -424,7 +404,7 @@ class PlaywrightExtractor:
                 _update_task(task_id, progress=100, status="done", result=result)
                 return result
 
-            # ── Anti-bot trap / Tor network drop / navigation timeout ─────
+            # ── Anti-bot trap / network drop / navigation timeout ─────────
             except PlaywrightTimeoutError as exc:
                 reason = f"Navigation timeout after {PAGE_TIMEOUT_MS}ms: {exc}"
                 logger.warning("[EXTRACTOR] TimeoutError (task_id=%s): %s", task_id, reason)
@@ -435,10 +415,7 @@ class PlaywrightExtractor:
 
             except PlaywrightError as exc:
                 msg = str(exc)
-                # Classify common anti-bot / Tor failure signatures
-                if any(sig in msg for sig in ("net::ERR_SOCKS_", "ERR_TUNNEL_CONNECTION_FAILED")):
-                    code = "TOR_PROXY_FAILURE"
-                elif "403" in msg or "429" in msg or "Anti-bot" in msg:
+                if "403" in msg or "429" in msg or "Anti-bot" in msg:
                     code = "ANTI_BOT_DETECTED"
                 elif "ERR_NAME_NOT_RESOLVED" in msg or "ERR_CONNECTION_REFUSED" in msg:
                     code = "DNS_OR_CONNECTION_REFUSED"

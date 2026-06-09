@@ -47,10 +47,9 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ---------------------------------------------------------------------------
 
-REDIS_URL: str = os.environ.get("REDIS_URL", "redis://redis:6379")
+REDIS_URL: str = os.environ.get("REDIS_URL", "redis://redis-hitl:6379/0")
 HITL_DEFAULT_TIMEOUT_S: float = float(os.environ.get("HITL_TIMEOUT_S", "120"))
 HITL_KEY_PREFIX: str = "hitl:auth"
-HITL_PENDING_SET: str = "hitl:pending_calls"
 
 
 # ---------------------------------------------------------------------------
@@ -118,8 +117,7 @@ class HITLBroker:
                 socket_timeout=5,
                 retry_on_timeout=True,
             )
-            await self._client.ping()
-            logger.info("[HITL] Redis connection established: %s", self._redis_url)
+            logger.info("[HITL] Redis queue client configured: %s", self._redis_url)
         except Exception as exc:
             logger.error("[HITL] Redis connection failed: %s", exc)
             self._client = None
@@ -170,10 +168,9 @@ class HITLBroker:
 
         redis_key = f"{HITL_KEY_PREFIX}:{call_id}"
 
-        # Register pending call in local dict + Redis set (for UI polling)
+        # Pending call inspection is process-local. Redis is queue-only.
         pending = PendingCall(call_id=call_id, tool_name=tool_name, tool_args=tool_args)
         self._pending[call_id] = pending
-        await self._safe_sadd(HITL_PENDING_SET, call_id)
 
         logger.info(
             "[HITL] Awaiting authorization — call_id=%s  tool=%s  timeout=%.0fs",
@@ -197,9 +194,6 @@ class HITLBroker:
 
         finally:
             self._pending.pop(call_id, None)
-            await self._safe_srem(HITL_PENDING_SET, call_id)
-            # Clean up any leftover key (e.g. if we timed out before LPUSH arrived)
-            await self._safe_delete(redis_key)
 
     # ------------------------------------------------------------------
     # Interface layer: LPUSH (called by FastAPI /hitl/authorize endpoint)
@@ -220,6 +214,9 @@ class HITLBroker:
         if not self._client:
             logger.error("[HITL] Cannot push authorization — Redis unavailable.")
             return False
+        if call_id not in self._pending:
+            logger.warning("[HITL] Refusing authorization for non-pending call_id=%s.", call_id)
+            return False
 
         redis_key = f"{HITL_KEY_PREFIX}:{call_id}"
         token_payload = json.dumps({
@@ -229,8 +226,6 @@ class HITLBroker:
         }).encode()
 
         pushed = await self._client.lpush(redis_key, token_payload)
-        # Set a short TTL so orphaned keys clean themselves up
-        await self._client.expire(redis_key, 30)
 
         logger.info(
             "[HITL] Authorization pushed — call_id=%s  approved=%s  reason=%r",
@@ -254,10 +249,6 @@ class HITLBroker:
             for p in self._pending.values()
         ]
 
-    # ------------------------------------------------------------------
-    # Private helpers
-    # ------------------------------------------------------------------
-
     def _parse_token(self, raw: bytes, call_id: str) -> tuple[AuthResult, str]:
         """Parse the LPUSH token from the interface layer."""
         try:
@@ -272,24 +263,6 @@ class HITLBroker:
             if raw in (b"APPROVED", b"1", b"true", b"True"):
                 return AuthResult.APPROVED, "Raw token APPROVED"
             return AuthResult.DENIED, f"Unrecognised raw token: {raw!r}"
-
-    async def _safe_sadd(self, key: str, *values: str) -> None:
-        try:
-            await self._client.sadd(key, *values)
-        except Exception as exc:
-            logger.debug("[HITL] sadd error (non-critical): %s", exc)
-
-    async def _safe_srem(self, key: str, *values: str) -> None:
-        try:
-            await self._client.srem(key, *values)
-        except Exception as exc:
-            logger.debug("[HITL] srem error (non-critical): %s", exc)
-
-    async def _safe_delete(self, key: str) -> None:
-        try:
-            await self._client.delete(key)
-        except Exception as exc:
-            logger.debug("[HITL] delete error (non-critical): %s", exc)
 
 
 # ---------------------------------------------------------------------------
