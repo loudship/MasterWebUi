@@ -14,7 +14,7 @@
 #
 # Run (standalone, targeting the host LM Studio instance):
 #   docker run --rm --network host \
-#     -e LM_STUDIO_API=http://localhost:1234/v1/models \
+#     -e LM_STUDIO_API=http://localhost:4321/api/v1/models \
 #     -e VRAM_CEILING=12240537395 \
 #     vram-arbiter:latest
 # =============================================================================
@@ -49,7 +49,7 @@ COPY vram_arbiter_daemon.py ./vram_arbiter_daemon.py
 # ---------------------------------------------------------------------------
 
 # Default environment variables (all overridable at docker run / compose)
-ENV LM_STUDIO_API="http://host.docker.internal:4321/v1/models" \
+ENV LM_STUDIO_API="http://host.docker.internal:4321/api/v1/models" \
     VRAM_CEILING="12240537395" \
     VRAM_PER_MODEL_ESTIMATE_GB="5" \
     PYTHONUNBUFFERED="1" \

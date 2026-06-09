@@ -70,6 +70,7 @@ from vram_arbiter_daemon import (
     EVICTION_COOLDOWN_S,
     LM_STUDIO_API,
     VRAMArbiterAsync,
+    _extract_loaded_models,
 )
 
 # ---------------------------------------------------------------------------
@@ -93,6 +94,22 @@ def _make_model_response(*model_ids: str) -> dict:
     return {"data": [{"id": mid} for mid in model_ids]}
 
 
+def _make_current_model_response(*loaded_model_ids: str) -> dict:
+    """Build a current LM Studio /api/v1/models payload."""
+    loaded = set(loaded_model_ids)
+    return {
+        "models": [
+            {
+                "key": model_id,
+                "loaded_instances": [{"id": f"{model_id}-instance"}]
+                if model_id in loaded
+                else [],
+            }
+            for model_id in (MODEL_A, MODEL_B)
+        ]
+    }
+
+
 def _fake_process(returncode: int = 0, stdout: bytes = b"ok", stderr: bytes = b"") -> MagicMock:
     """Return a mock asyncio.subprocess.Process."""
     proc = MagicMock()
@@ -100,6 +117,17 @@ def _fake_process(returncode: int = 0, stdout: bytes = b"ok", stderr: bytes = b"
     proc.communicate = AsyncMock(return_value=(stdout, stderr))
     proc.kill = MagicMock()
     return proc
+
+
+class TestLoadedModelExtraction:
+
+    def test_current_api_ignores_models_not_loaded_into_memory(self):
+        payload = _make_current_model_response(MODEL_B)
+        assert _extract_loaded_models(payload) == {MODEL_B}
+
+    def test_legacy_openai_model_list_remains_supported(self):
+        payload = _make_model_response(MODEL_A, MODEL_B)
+        assert _extract_loaded_models(payload) == {MODEL_A, MODEL_B}
 
 
 # ===========================================================================

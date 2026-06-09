@@ -4,7 +4,7 @@ vram_arbiter_daemon.py — Async VRAM Hardware Arbiter (v2)
 
 Non-blocking asyncio background daemon that:
 
-  1. Polls the local LM Studio /v1/models endpoint at a strict 1000 ms interval.
+  1. Polls the local LM Studio /api/v1/models endpoint at a strict 1000 ms interval.
   2. Tracks active context array allocations and their estimated VRAM footprints.
   3. Compares total allocated VRAM against the VRAM_CEILING threshold
      (11.4 GB out of 12 GB physical capacity).
@@ -32,7 +32,7 @@ Architecture
 ------------
   asyncio event loop
     └── _arbiter_loop()           ← 1000 ms periodic driver (asyncio.sleep)
-          └── _poll_vram_state()  ← async aiohttp GET /v1/models
+          └── _poll_vram_state()  ← async aiohttp GET /api/v1/models
                 └── _evict_model_async()  ← asyncio subprocess lms CLI
 """
 
@@ -64,14 +64,16 @@ logger = logging.getLogger("vram_arbiter")
 
 LM_STUDIO_API: str = os.environ.get(
     "LM_STUDIO_API",
-    "http://localhost:1234/v1/models",
+    "http://localhost:4321/api/v1/models",
 )
 
 # Strict 1000 ms polling rate (non-blocking asyncio.sleep)
 POLL_INTERVAL_S: float = 1.0
 
 # VRAM ceiling: 11.4 GiB (11.4 × 1024³ bytes)
-VRAM_CEILING: int = int(11.4 * 1024 * 1024 * 1024)   # 12_240_537_395 bytes
+VRAM_CEILING: int = int(
+    os.environ.get("VRAM_CEILING", str(int(11.4 * 1024 * 1024 * 1024)))
+)
 
 # Per-model eviction cooldown to prevent rapid restart spam
 EVICTION_COOLDOWN_S: float = 300.0
@@ -80,14 +82,32 @@ EVICTION_COOLDOWN_S: float = 300.0
 # VRAM usage via the /v1/models endpoint, so we use a conservative default.
 # Override via env var if a different heuristic is preferred.
 VRAM_PER_MODEL_ESTIMATE: int = int(
-    os.environ.get("VRAM_PER_MODEL_ESTIMATE_GB", "5.7")
-) * 1024 * 1024 * 1024
+    float(os.environ.get("VRAM_PER_MODEL_ESTIMATE_GB", "5.7")) * 1024 * 1024 * 1024
+)
 
 # aiohttp request timeout (seconds)
 HTTP_TIMEOUT_S: float = 5.0
 
 # lms subprocess timeout (seconds)
 LMS_TIMEOUT_S:  float = 15.0
+
+
+def _extract_loaded_models(data: dict) -> set[str]:
+    """Return only model keys that LM Studio reports as currently loaded."""
+    models = data.get("models")
+    if isinstance(models, list):
+        return {
+            model["key"]
+            for model in models
+            if model.get("key") and model.get("loaded_instances")
+        }
+
+    # Backward-compatible fallback for the legacy OpenAI-compatible endpoint.
+    return {
+        model["id"]
+        for model in data.get("data", [])
+        if isinstance(model, dict) and model.get("id")
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +243,7 @@ class VRAMArbiterAsync:
         """
         Estimate current total VRAM allocation from active model set.
         Uses VRAM_PER_MODEL_ESTIMATE bytes per model as a conservative heuristic
-        (LM Studio /v1/models does not expose per-model byte usage directly).
+        (LM Studio does not expose per-model byte usage directly).
         """
         return len(models) * VRAM_PER_MODEL_ESTIMATE
 
@@ -233,7 +253,7 @@ class VRAMArbiterAsync:
 
     async def _poll_vram_state(self, session: aiohttp.ClientSession) -> None:
         """
-        Query LM Studio /v1/models and apply VRAM ceiling arbitration.
+        Query LM Studio /api/v1/models and apply VRAM ceiling arbitration.
 
         All network errors are caught silently.  JSON parse failures and
         unexpected exceptions are logged at WARNING/ERROR without propagating,
@@ -283,9 +303,7 @@ class VRAMArbiterAsync:
         # Process model list
         # ------------------------------------------------------------------
         current_time = time.monotonic()
-        current_models: set[str] = {
-            m["id"] for m in data.get("data", []) if "id" in m
-        }
+        current_models = _extract_loaded_models(data)
 
         # ── Track new model appearances ────────────────────────────────────
         for model in current_models:

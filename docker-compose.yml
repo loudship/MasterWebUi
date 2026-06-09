@@ -22,7 +22,15 @@ services:
       - HTTP_PROXY=socks5://tor-gateway:9050
       - HTTPS_PROXY=socks5://tor-gateway:9050
       - ALL_PROXY=socks5://tor-gateway:9050
+      - NO_PROXY=localhost,127.0.0.1,crawl4ai,crawl4ai-proxy,searxng,open-webui,qdrant,redis-cache,langgraph-orchestrator,deep-web-mcp
+      - no_proxy=localhost,127.0.0.1,crawl4ai,crawl4ai-proxy,searxng,open-webui,qdrant,redis-cache,langgraph-orchestrator,deep-web-mcp
     shm_size: 1g
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:11235/health >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
@@ -36,6 +44,8 @@ services:
       - HTTP_PROXY=socks5://tor-gateway:9050
       - HTTPS_PROXY=socks5://tor-gateway:9050
       - ALL_PROXY=socks5://tor-gateway:9050
+      - NO_PROXY=localhost,127.0.0.1,crawl4ai,crawl4ai-proxy,searxng,open-webui,qdrant,redis-cache,langgraph-orchestrator,deep-web-mcp
+      - no_proxy=localhost,127.0.0.1,crawl4ai,crawl4ai-proxy,searxng,open-webui,qdrant,redis-cache,langgraph-orchestrator,deep-web-mcp
     ports:
       - "8000:8000"
     extra_hosts:
@@ -66,6 +76,7 @@ services:
     container_name: open-webui
     environment:
       - OPENAI_API_BASE_URL=${OPENAI_API_BASE_URL}
+      - ENABLE_OLLAMA_API=${ENABLE_OLLAMA_API}
       - ENABLE_WEB_SEARCH=${ENABLE_WEB_SEARCH}
       - WEB_SEARCH_ENGINE=${WEB_SEARCH_ENGINE}
       - SEARXNG_QUERY_URL=${SEARXNG_QUERY_URL}
@@ -91,6 +102,7 @@ services:
       - MCPS=${MCPS}
       - MCPS_URLS=${MCPS}
       - AGENT_MAX_STEPS=${AGENT_MAX_STEPS}
+      - CHAT_RESPONSE_MAX_TOOL_CALL_ITERATIONS=${CHAT_RESPONSE_MAX_TOOL_CALL_ITERATIONS}
       - VECTOR_DB=${VECTOR_DB}
       - QDRANT_URI=${QDRANT_URI}
       - CHUNK_SIZE=${CHUNK_SIZE}
@@ -325,7 +337,7 @@ services:
       - VRAM_PER_MODEL_ESTIMATE_GB=5
       # LM Studio inference endpoint — resolves to the host machine via
       # host.docker.internal (bridge network extra_hosts mapping below)
-      - LM_STUDIO_API=http://host.docker.internal:4321/v1/models
+      - LM_STUDIO_API=http://host.docker.internal:4321/api/v1/models
       # Unbuffered output so docker logs streams in real-time
       - PYTHONUNBUFFERED=1
 
