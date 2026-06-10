@@ -1,4 +1,8 @@
-use_default_settings: true
+use_default_settings:
+  engines:
+    remove:
+      - ahmia
+      - torch
 
 server:
   # SearXNG's Docker entrypoint binds the uwsgi/gunicorn process on port 8080
@@ -7,6 +11,7 @@ server:
   # The host-side mapping (8082:8080) is handled in docker-compose.yml.
   bind_address: "0.0.0.0"
   secret_key: "searxngsecret"
+  limiter: false
   # Internal DNS name used by other containers on llm-net resolves to port 8080
   base_url: http://searxng:8080/
 
@@ -15,4 +20,10 @@ search:
     - html
     - json
 
-engines: []
+engines:
+  - name: brave
+    disabled: true
+  - name: duckduckgo
+    disabled: true
+  - name: google
+    disabled: true
