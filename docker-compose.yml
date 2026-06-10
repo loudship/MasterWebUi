@@ -83,6 +83,45 @@ services:
     dns: *airgap-dns
     restart: unless-stopped
 
+  redis-cache:
+    profiles: [offline-tools]
+    image: redis@sha256:09160599abd229764c0fb44cb6be640294e1d360a54b19985ab4843dcf2d90f1
+    pull_policy: never
+    container_name: redis-cache
+    ports:
+      - 127.0.0.1:6379:6379
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 5s
+    networks:
+      - llm-net
+    dns: *airgap-dns
+    restart: unless-stopped
+
+  redis-ui:
+    profiles: [offline-tools]
+    build:
+      context: .
+      dockerfile: services/redis-ui/Dockerfile
+    image: redis-ui:local
+    pull_policy: never
+    container_name: redis-ui
+    environment:
+      REDIS_CACHE_URL: redis://redis-cache:6379/0
+      REDIS_UI_MAX_VALUE_BYTES: "1048576"
+    depends_on:
+      redis-cache:
+        condition: service_healthy
+    ports:
+      - 127.0.0.1:5540:5540
+    networks:
+      - llm-net
+    dns: *airgap-dns
+    restart: unless-stopped
+
   inference-gateway:
     build:
       context: .
@@ -271,6 +310,32 @@ services:
     dns: *airgap-dns
     restart: unless-stopped
 
+  docling-serve:
+    profiles: [offline-tools]
+    build:
+      context: .
+      dockerfile: services/docling-ui/Dockerfile
+    image: docling-serve:local-ui
+    pull_policy: never
+    container_name: docling-serve
+    environment:
+      DOCLING_SERVE_ENABLE_UI: "true"
+      DOCLING_SERVE_MAX_SYNC_WAIT: "300"
+      GRADIO_ANALYTICS_ENABLED: "false"
+      UVICORN_WORKERS: "1"
+    ports:
+      - 127.0.0.1:5001:5001
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5001/health', timeout=4)"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 90s
+    networks:
+      - llm-net
+    dns: *airgap-dns
+    restart: unless-stopped
+
   deep-web-mcp:
     profiles: [offline-tools]
     build:
@@ -306,7 +371,7 @@ services:
     container_name: monitor-daemon
     environment:
       QDRANT_URL: http://qdrant:6333
-      QDRANT_COLLECTION: monitor_active
+      QDRANT_COLLECTION: ${MONITOR_QDRANT_COLLECTION:-monitor_active}
       MCP_URL: http://deep-web-mcp:8000
       ORCHESTRATOR_URL: http://langgraph-orchestrator:8100
       POSTGRES_OPS_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/ops

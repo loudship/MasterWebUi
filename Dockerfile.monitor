@@ -21,6 +21,7 @@ FROM monitor-daemon@sha256:f979055cc5dedfee9d523a380a08c46e85201099b130fd394fe8b
 
 WORKDIR /app
 COPY monitor_daemon.py ./monitor_daemon.py
+COPY monitor_dashboard.html ./monitor_dashboard.html
 
 # ---------------------------------------------------------------------------
 # Runtime environment defaults (all overridable via docker-compose)

@@ -46,12 +46,14 @@ import os
 import time
 import uuid
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import List, Optional
 
 import aiohttp
 import httpx
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 # ---------------------------------------------------------------------------
@@ -188,10 +190,95 @@ _eval_history: list[EvalRecord] = []
 _HISTORY_MAX:  int = 100
 
 
+@dataclass
+class OperationStep:
+    name: str
+    label: str
+    status: str = "pending"  # pending | running | success | error | skipped
+    started_at: Optional[float] = None
+    completed_at: Optional[float] = None
+    detail: Optional[str] = None
+
+
+@dataclass
+class OperationRecord:
+    eval_id: str
+    url: str
+    started_at: float
+    updated_at: float
+    status: str = "running"
+    outcome: Optional[str] = None
+    current_step: Optional[str] = None
+    steps: list[OperationStep] = field(default_factory=list)
+
+
+_PIPELINE_STEPS = (
+    ("extraction", "Deep-web extraction"),
+    ("embedding", "CPU embedding"),
+    ("alias_check", "Qdrant alias check"),
+    ("vector_lookup", "Baseline lookup"),
+    ("distance", "Drift calculation"),
+    ("vector_write", "Vector persistence"),
+    ("alert", "Orchestrator alert"),
+)
+_active_operations: dict[str, OperationRecord] = {}
+_recent_operations: list[OperationRecord] = []
+_OPERATIONS_MAX = 20
+_started_at = time.time()
+
+
+def _start_operation(eval_id: str, url: str) -> None:
+    now = time.time()
+    _active_operations[eval_id] = OperationRecord(
+        eval_id=eval_id,
+        url=url,
+        started_at=now,
+        updated_at=now,
+        steps=[OperationStep(name=name, label=label) for name, label in _PIPELINE_STEPS],
+    )
+
+
+def _set_operation_step(eval_id: str, step_name: str, detail: Optional[str] = None) -> None:
+    operation = _active_operations.get(eval_id)
+    if operation is None:
+        return
+    now = time.time()
+    for step in operation.steps:
+        if step.status == "running":
+            step.status = "success"
+            step.completed_at = now
+        if step.name == step_name:
+            step.status = "running"
+            step.started_at = step.started_at or now
+            step.detail = detail
+    operation.current_step = step_name
+    operation.updated_at = now
+
+
+def _finish_operation(record: EvalRecord) -> None:
+    operation = _active_operations.pop(record.eval_id, None)
+    if operation is None:
+        return
+    now = time.time()
+    operation.updated_at = now
+    operation.outcome = record.outcome
+    operation.status = "error" if record.outcome == "error" else "success"
+    for step in operation.steps:
+        if step.status == "running":
+            step.status = operation.status
+            step.completed_at = now
+            step.detail = record.error_code or step.detail
+        elif step.status == "pending":
+            step.status = "skipped"
+    _recent_operations.insert(0, operation)
+    del _recent_operations[_OPERATIONS_MAX:]
+
+
 def _record_eval(record: EvalRecord) -> None:
     _eval_history.append(record)
     if len(_eval_history) > _HISTORY_MAX:
         _eval_history.pop(0)
+    _finish_operation(record)
 
 
 # ---------------------------------------------------------------------------
@@ -397,7 +484,7 @@ async def _dispatch_alert(
     distance:     float,
     new_payload:  str,
     eval_id:      str,
-) -> None:
+) -> bool:
     """
     POST an asynchronous drift alert to the LangGraph orchestrator webhook.
 
@@ -436,6 +523,7 @@ async def _dispatch_alert(
                     "[MONITOR] Alert dispatched successfully — eval_id=%s  status=%d",
                     eval_id, resp.status,
                 )
+                return True
             else:
                 body = await resp.text()
                 logger.warning(
@@ -448,6 +536,7 @@ async def _dispatch_alert(
             "[MONITOR] Alert dispatch failed (non-fatal): %s: %s",
             type(exc).__name__, exc,
         )
+    return False
 
 
 # ===========================================================================
@@ -479,6 +568,59 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+_DASHBOARD_PATH = Path(__file__).with_name("monitor_dashboard.html")
+
+
+async def _probe_backend(
+    session: aiohttp.ClientSession,
+    name: str,
+    label: str,
+    url: str,
+    expected_statuses: tuple[int, ...] = (200,),
+) -> dict:
+    started = time.perf_counter()
+    try:
+        async with session.get(
+            url,
+            timeout=aiohttp.ClientTimeout(total=3.0),
+        ) as response:
+            latency_ms = round((time.perf_counter() - started) * 1000)
+            status = "reachable" if response.status in expected_statuses else "degraded"
+            return {
+                "name": name,
+                "label": label,
+                "status": status,
+                "detail": (
+                    f"Responding (HTTP {response.status})"
+                    if status == "reachable"
+                    else f"Unexpected HTTP {response.status}"
+                ),
+                "latency_ms": latency_ms,
+            }
+    except Exception as exc:
+        return {
+            "name": name,
+            "label": label,
+            "status": "offline",
+            "detail": f"{type(exc).__name__}: {str(exc)[:120]}",
+            "latency_ms": round((time.perf_counter() - started) * 1000),
+        }
+
+
+async def _backend_connectivity() -> list[dict]:
+    connector = aiohttp.TCPConnector(limit=3, ttl_dns_cache=30)
+    async with aiohttp.ClientSession(connector=connector) as session:
+        return await asyncio.gather(
+            _probe_backend(
+                session,
+                "deep_web_mcp",
+                "Deep Web MCP",
+                f"{MCP_URL}/extract/status/dashboard-connectivity-probe",
+            ),
+            _probe_backend(session, "qdrant", "Qdrant", f"{QDRANT_URL}/aliases"),
+            _probe_backend(session, "orchestrator", "LangGraph Orchestrator", f"{ORCHESTRATOR_URL}/health"),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -540,6 +682,8 @@ async def evaluate(req: EvaluateRequest) -> EvaluateResponse:
     """
     eval_id   = str(uuid.uuid4())
     point_id  = _url_point_id(req.url)
+    _start_operation(eval_id, req.url)
+    _set_operation_step(eval_id, "extraction", "Fetching sanitized content from Deep Web MCP")
 
     logger.info(
         "[MONITOR] Evaluation started — eval_id=%s  url=%r",
@@ -613,6 +757,7 @@ async def evaluate(req: EvaluateRequest) -> EvaluateResponse:
         )
 
         # ── Step 2: CPU embedding ──────────────────────────────────────────
+        _set_operation_step(eval_id, "embedding", f"Embedding {len(content)} characters on CPU")
         try:
             new_vector = await _embed_text(content)
         except Exception as exc:
@@ -633,10 +778,17 @@ async def evaluate(req: EvaluateRequest) -> EvaluateResponse:
         logger.debug("[MONITOR] Vector generated — dim=%d  eval_id=%s", embed_dim, eval_id)
 
         # Require an operator-created alias; request-time collection creation is forbidden.
+        _set_operation_step(eval_id, "alias_check", f"Verifying Qdrant alias {COLLECTION}")
         try:
             await _require_collection_alias(session)
         except Exception as exc:
             logger.error("[MONITOR] Qdrant alias requirement failed: %s", exc)
+            record = EvalRecord(
+                eval_id=eval_id, url=req.url,
+                timestamp=time.time(),
+                outcome="error", error_code="QDRANT_ALIAS_FAILURE",
+            )
+            _record_eval(record)
             return EvaluateResponse(
                 eval_id=eval_id,
                 url=req.url,
@@ -645,6 +797,7 @@ async def evaluate(req: EvaluateRequest) -> EvaluateResponse:
             )
 
         # ── Step 3: Qdrant lookup ──────────────────────────────────────────
+        _set_operation_step(eval_id, "vector_lookup", "Looking up the previous observation")
         existing_point = None
         if not req.force_baseline:
             try:
@@ -666,6 +819,7 @@ async def evaluate(req: EvaluateRequest) -> EvaluateResponse:
                 "content":   content[:2048],   # store excerpt for provenance
                 "timestamp": time.time(),
             }
+            _set_operation_step(eval_id, "vector_write", "Persisting a new baseline vector")
             try:
                 await _qdrant_upsert(session, point_id, new_vector, qdrant_payload)
                 logger.info(
@@ -690,6 +844,7 @@ async def evaluate(req: EvaluateRequest) -> EvaluateResponse:
             )
 
         # ── Step 4: Extract stored vector and compute cosine distance ──────
+        _set_operation_step(eval_id, "distance", "Calculating semantic cosine distance")
         try:
             stored_vector: list[float] = existing_point.get("vector", [])
             if not stored_vector:
@@ -754,6 +909,7 @@ async def evaluate(req: EvaluateRequest) -> EvaluateResponse:
             "timestamp":    time.time(),
             "prev_distance": distance,
         }
+        _set_operation_step(eval_id, "vector_write", "Persisting the changed content vector")
         try:
             await _qdrant_upsert(session, point_id, new_vector, qdrant_payload)
             logger.info(
@@ -766,16 +922,16 @@ async def evaluate(req: EvaluateRequest) -> EvaluateResponse:
             )
 
         # Dispatch alert to LangGraph orchestrator (fire-and-forget)
+        _set_operation_step(eval_id, "alert", "Dispatching drift alert to LangGraph")
         alert_sent = False
         try:
-            await _dispatch_alert(
+            alert_sent = await _dispatch_alert(
                 session=session,
                 url=req.url,
                 distance=distance,
                 new_payload=content,
                 eval_id=eval_id,
             )
-            alert_sent = True
         except Exception as exc:
             logger.warning("[MONITOR] Alert dispatch raised: %s", exc)
 
@@ -797,6 +953,53 @@ async def evaluate(req: EvaluateRequest) -> EvaluateResponse:
                 f"LangGraph alert {'dispatched' if alert_sent else 'dispatch failed (non-fatal)'}."
             ),
         )
+
+
+# ===========================================================================
+# ENDPOINTS: Dashboard and consolidated operations overview
+# ===========================================================================
+
+@app.get("/", include_in_schema=False)
+async def dashboard():
+    """Serve the local operator dashboard."""
+    if not _DASHBOARD_PATH.exists():
+        raise HTTPException(status_code=503, detail="Dashboard asset is unavailable.")
+    return FileResponse(_DASHBOARD_PATH, media_type="text/html")
+
+
+@app.get("/monitor/overview")
+async def operations_overview():
+    """Return the live dashboard data contract in one request."""
+    backends = await _backend_connectivity()
+    history = list(reversed(_eval_history))[:20]
+    error_count = sum(record.outcome == "error" for record in _eval_history)
+    offline_count = sum(backend["status"] == "offline" for backend in backends)
+    degraded_count = sum(backend["status"] == "degraded" for backend in backends)
+    latest_failed = bool(history and history[0].outcome == "error")
+    if offline_count or latest_failed:
+        system_state = "Attention needed"
+    elif degraded_count or not (_embed_model is not None):
+        system_state = "Degraded"
+    else:
+        system_state = "Operational"
+
+    return {
+        "summary": {
+            "system_state": system_state,
+            "active_operations": len(_active_operations),
+            "total_evaluations": len(_eval_history),
+            "error_rate_percent": (
+                (error_count / len(_eval_history)) * 100 if _eval_history else 0.0
+            ),
+            "uptime_seconds": round(time.time() - _started_at),
+            "model_loaded": _embed_model is not None,
+        },
+        "backends": backends,
+        "active_operations": [asdict(operation) for operation in _active_operations.values()],
+        "recent_operations": [asdict(operation) for operation in _recent_operations],
+        "history": [asdict(record) for record in history],
+        "timestamp": time.time(),
+    }
 
 
 # ===========================================================================
@@ -830,6 +1033,8 @@ async def daemon_status():
         "mcp_url":       MCP_URL,
         "alert_endpoint": ALERT_ENDPOINT,
         "eval_count":    len(_eval_history),
+        "active_operations": len(_active_operations),
+        "uptime_seconds": round(time.time() - _started_at),
         "timestamp":     time.time(),
     }
 

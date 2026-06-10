@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Monitor Daemon Operations</title>
+  <style>
+    :root{color-scheme:dark;--bg:#07100f;--panel:#0d1a18;--line:#1b3530;--text:#e6f4ef;--muted:#88a59d;--good:#56e39f;--warn:#f5c451;--bad:#ff6b6b;--accent:#6ee7d0}
+    *{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 20% 0,#12352d 0,transparent 38%),var(--bg);font:14px/1.45 system-ui,sans-serif;color:var(--text)}
+    main{max-width:1440px;margin:auto;padding:28px}.top{display:flex;justify-content:space-between;gap:20px;align-items:flex-start;margin-bottom:22px}h1{font-size:25px;margin:0 0 5px}.subtitle,.muted{color:var(--muted)}.live{display:flex;gap:8px;align-items:center;padding:8px 12px;border:1px solid var(--line);border-radius:999px;background:#0b1715}.dot{width:9px;height:9px;border-radius:50%;background:var(--muted)}.dot.good{background:var(--good);box-shadow:0 0 12px var(--good)}.dot.bad{background:var(--bad)}
+    .summary{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:18px}.card,.panel{background:linear-gradient(145deg,#10201d,#0b1614);border:1px solid var(--line);border-radius:14px;box-shadow:0 14px 34px #0004}.card{padding:17px}.card span{display:block;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.08em}.card strong{display:block;font-size:25px;margin-top:7px}.grid{display:grid;grid-template-columns:1.2fr .8fr;gap:18px}.panel{padding:18px;margin-bottom:18px}.panel h2{font-size:15px;margin:0 0 14px}.services{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.service{padding:13px;border:1px solid var(--line);border-radius:11px;background:#091411}.service-head{display:flex;justify-content:space-between;gap:10px;font-weight:650}.pill{font-size:11px;padding:2px 7px;border-radius:999px;background:#1e302c;color:var(--muted)}.pill.reachable,.pill.success,.pill.ok{background:#123b2d;color:var(--good)}.pill.degraded{background:#3c3213;color:var(--warn)}.pill.offline,.pill.error{background:#401d20;color:var(--bad)}.service p{margin:9px 0 0;color:var(--muted);font-size:12px;overflow-wrap:anywhere}
+    .empty{padding:26px;text-align:center;color:var(--muted);border:1px dashed var(--line);border-radius:11px}.operation{padding:14px;border:1px solid var(--line);border-radius:11px;margin-top:10px}.op-head{display:flex;justify-content:space-between;gap:12px}.url{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:70%;font-weight:650}.steps{display:grid;grid-template-columns:repeat(7,1fr);gap:5px;margin-top:13px}.step{height:5px;border-radius:5px;background:#24342f}.step.success{background:var(--good)}.step.running{background:var(--accent);animation:pulse 1s infinite}.step.error{background:var(--bad)}.step.skipped{background:#16231f}.step-label{margin-top:8px;color:var(--muted);font-size:12px}.history{width:100%;border-collapse:collapse}.history th{text-align:left;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.06em}.history th,.history td{padding:10px 7px;border-bottom:1px solid var(--line)}.history td:nth-child(2){max-width:310px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.error-box{color:var(--bad);padding:12px;border:1px solid #5a2929;border-radius:9px;background:#281314}
+    @keyframes pulse{50%{opacity:.35}}@media(max-width:950px){.summary,.services{grid-template-columns:repeat(2,1fr)}.grid{display:block}}@media(max-width:600px){main{padding:16px}.summary,.services{grid-template-columns:1fr}.top{display:block}.live{margin-top:12px;width:max-content}.history th:nth-child(3),.history td:nth-child(3){display:none}}
+  </style>
+</head>
+<body><main>
+  <header class="top"><div><h1>Monitor Daemon Operations</h1><div class="subtitle">Live visibility into evaluations, tools, and backend connectivity</div></div><div class="live"><i id="liveDot" class="dot"></i><span id="liveText">Connecting</span></div></header>
+  <section class="summary">
+    <div class="card"><span>System state</span><strong id="systemState">Checking</strong></div>
+    <div class="card"><span>Active operations</span><strong id="activeCount">0</strong></div>
+    <div class="card"><span>Evaluations</span><strong id="evalCount">0</strong></div>
+    <div class="card"><span>Error rate</span><strong id="errorRate">0%</strong></div>
+  </section>
+  <section class="panel"><h2>Backend connectivity</h2><div id="services" class="services"></div></section>
+  <div class="grid"><div>
+    <section class="panel"><h2>Active operations</h2><div id="active"></div></section>
+    <section class="panel"><h2>Recent tool execution</h2><div id="recentOps"></div></section>
+  </div><section class="panel"><h2>Evaluation history</h2><div id="history"></div></section></div>
+</main><script>
+const $=id=>document.getElementById(id), esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const age=t=>{const s=Math.max(0,Math.round(Date.now()/1000-t));return s<60?s+"s ago":Math.floor(s/60)+"m ago"};
+function operation(o){const current=o.steps.find(s=>s.status==="running"),failed=o.steps.find(s=>s.status==="error");return `<div class="operation"><div class="op-head"><span class="url" title="${esc(o.url)}">${esc(o.url)}</span><span class="pill ${esc(o.status)}">${esc(o.outcome||o.status)}</span></div><div class="steps">${o.steps.map(s=>`<i class="step ${esc(s.status)}" title="${esc(s.label)}: ${esc(s.status)}"></i>`).join("")}</div><div class="step-label">${current?`Running: ${esc(current.label)}`:failed?`Failed: ${esc(failed.label)} · ${esc(failed.detail)}`:`Completed ${age(o.updated_at)}`} · ${Math.max(0,o.updated_at-o.started_at).toFixed(1)}s</div></div>`}
+async function refresh(){try{const r=await fetch("/monitor/overview",{cache:"no-store"});if(!r.ok)throw Error(`HTTP ${r.status}`);const d=await r.json();$("liveDot").className="dot good";$("liveText").textContent="Live · updated "+new Date().toLocaleTimeString();$("systemState").textContent=d.summary.system_state;$("activeCount").textContent=d.summary.active_operations;$("evalCount").textContent=d.summary.total_evaluations;$("errorRate").textContent=d.summary.error_rate_percent.toFixed(1)+"%";
+$("services").innerHTML=d.backends.map(s=>`<article class="service"><div class="service-head"><span>${esc(s.label)}</span><span class="pill ${esc(s.status)}">${esc(s.status)}</span></div><p>${esc(s.detail)} · ${s.latency_ms} ms</p></article>`).join("");
+$("active").innerHTML=d.active_operations.length?d.active_operations.map(operation).join(""):`<div class="empty">No evaluation is running. The daemon is ready.</div>`;
+$("recentOps").innerHTML=d.recent_operations.length?d.recent_operations.slice(0,4).map(operation).join(""):`<div class="empty">No tool executions recorded since startup.</div>`;
+$("history").innerHTML=d.history.length?`<table class="history"><thead><tr><th>Outcome</th><th>Target</th><th>Distance</th><th>When</th></tr></thead><tbody>${d.history.map(h=>`<tr><td><span class="pill ${esc(h.outcome==="error"?"error":"success")}">${esc(h.outcome)}</span></td><td title="${esc(h.url)}">${esc(h.url)}</td><td>${h.distance==null?"—":h.distance.toFixed(5)}</td><td>${age(h.timestamp)}</td></tr>`).join("")}</tbody></table>`:`<div class="empty">No evaluations recorded since startup.</div>`;
+}catch(e){$("liveDot").className="dot bad";$("liveText").textContent="Dashboard disconnected";$("services").innerHTML=`<div class="error-box">${esc(e.message)}</div>`}}
+refresh();setInterval(refresh,3000);
+</script></body></html>
