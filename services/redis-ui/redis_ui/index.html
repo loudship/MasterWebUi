@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Redis Operations Console</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23ff554a'/%3E%3Ctext x='32' y='42' text-anchor='middle' font-family='Arial' font-size='32' font-weight='700' fill='white'%3ER%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+<aside>
+  <div class="brand"><span>R</span><div><strong>Redis Operations</strong><small>Cache console</small></div></div>
+  <nav id="nav">
+    <button class="active" data-view="dashboard" data-tip="View Redis health, capacity, performance, warnings, and recent debug evidence.">Dashboard</button>
+    <button data-view="browse" data-tip="Safely search and inspect key metadata and values without changing them.">Browse Keys</button>
+    <button data-view="manage" data-tip="Advanced state-changing tools for creating, replacing, expiring, and deleting keys.">Manage Keys</button>
+    <button data-view="diagnostics" data-tip="Run a complete read-only Redis diagnostic and review actionable recommendations.">Health & Diagnostics</button>
+    <button data-view="history" data-tip="Review and download retained Full Debug reports.">Report History</button>
+  </nav>
+  <div class="connection"><i id="dot"></i><span id="connection">Connecting</span></div>
+</aside>
+<main>
+  <header><div><p class="eyebrow">LOCAL REDIS OPERATIONS</p><h1 id="page-title">Dashboard</h1><p id="page-desc">Current health, capacity, activity, and operational warnings.</p></div><button class="secondary" id="refresh" data-tip="Refresh the cached Redis overview now.">Refresh</button></header>
+
+  <section class="view active" id="dashboard">
+    <div class="hero"><div><p class="eyebrow">CURRENT POSTURE</p><h2 id="posture">Checking Redis...</h2><p>Monitor Redis safely and generate durable diagnostic evidence without changing cache data.</p></div><button id="hero-debug" data-tip="Run all read-only Redis health and configuration checks and save a downloadable report.">Run Full Debug</button></div>
+    <div class="metrics" id="metrics"></div>
+    <h3>Actionable warnings</h3><div id="warnings" class="stack"></div>
+    <div class="grid"><article class="panel"><h3>Database key distribution</h3><p>Keys and expirations across all logical databases.</p><div id="db-bars"></div></article><article class="panel"><h3>Runtime and persistence</h3><p>Core server, eviction, and disk-snapshot settings.</p><div id="runtime"></div></article></div>
+    <h3>Recent debug evidence</h3><div id="recent" class="stack"></div>
+  </section>
+
+  <section class="view" id="browse">
+    <div class="page-intro"><h2>Browse Keys</h2><p>Search a logical database and inspect a key's type, TTL, memory footprint, encoding, and current value without modifying it.</p></div>
+    <div class="toolbar"><label>Database<select id="browse-db" data-tip="Select one of Redis's logical databases."></select></label><label class="grow">Key pattern<input id="pattern" value="*" placeholder="Example: session:*" data-tip="Uses Redis SCAN glob patterns. It does not block Redis like KEYS can."></label><button id="scan" data-tip="Scan the selected database for matching keys.">Scan Keys</button></div>
+    <div class="split"><article class="panel"><h3>Matching keys <span id="key-count" class="pill">0</span></h3><div id="keys" class="empty">Run a scan to browse keys.</div><button class="secondary" id="more">Continue scan</button></article><article class="panel"><h3>Key inspector</h3><div id="detail" class="empty">Select a key to inspect it.</div></article></div>
+  </section>
+
+  <section class="view" id="manage">
+    <div class="page-intro warning"><h2>Manage Keys</h2><p>Advanced state-changing tools. Create and replace operations overwrite the named key; deletion requires exact-name confirmation.</p></div>
+    <article class="panel"><h3>Create or replace a key</h3><p>Use a clearly namespaced key and add a TTL unless persistence is intentional.</p><div class="form-grid"><label>Database<select id="manage-db"></select></label><label>Redis type<select id="manage-type"><option>string</option><option>json</option><option>hash</option><option>list</option><option>set</option><option>zset</option></select></label><label class="wide">Key name<input id="manage-key" placeholder="Example: debug:temporary:key"></label><label>TTL seconds<input id="manage-ttl" type="number" min="1" placeholder="Blank = persistent"></label><label class="wide">Value<textarea id="manage-value" placeholder="Strings use plain text. Other types use JSON syntax."></textarea></label></div><button id="save-key">Save key</button></article>
+    <article class="panel danger"><h3>Delete a key</h3><p>This immediately removes one named key. Type the exact key name in both fields to confirm.</p><div class="form-grid"><label>Database<select id="delete-db"></select></label><label>Key name<input id="delete-name"></label><label class="wide">Exact confirmation<input id="delete-confirm"></label></div><button class="danger-button" id="delete-key">Delete confirmed key</button></article>
+  </section>
+
+  <section class="view" id="diagnostics">
+    <div class="hero"><div><p class="eyebrow">READ-ONLY DIAGNOSTICS</p><h2>Full Redis Debug</h2><p>Checks connectivity, runtime, memory, persistence, clients, performance, modules, security, and metadata-only keyspace health.</p></div><button id="run-debug" data-tip="Runs read-only commands only. No keys, values, configuration, or server state are changed.">Run Full Debug</button></div>
+    <div id="debug-result" class="empty">No Full Debug run in this session.</div>
+  </section>
+
+  <section class="view" id="history">
+    <div class="page-intro"><h2>Report History</h2><p>Sanitized Full Debug reports retained for 30 days, capped at 200 reports.</p></div>
+    <div id="reports" class="stack"></div>
+  </section>
+</main>
+<div id="tooltip" role="tooltip"></div><div id="toast" role="status" aria-live="polite"></div>
+<script src="/assets/app.js" defer></script>
+</body></html>
+

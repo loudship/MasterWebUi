@@ -8,13 +8,21 @@ RUN pip install --no-cache-dir --no-index --find-links=/wheelhouse -r requiremen
 
 COPY services/redis-ui/redis_ui.py ./redis_ui.py
 COPY services/redis-ui/redis_ui.html ./redis_ui.html
+COPY services/redis-ui/redis_console ./redis_console
+COPY services/redis-ui/redis_ui ./redis_ui
 
 ENV REDIS_CACHE_URL="redis://redis-cache:6379/0" \
+    REDIS_UI_DB_PATH="/app/data/redis-console.db" \
+    REDIS_UI_REPORT_RETENTION_DAYS="30" \
+    REDIS_UI_REPORT_MAX_COUNT="200" \
+    REDIS_UI_OVERVIEW_CACHE_TTL_S="10" \
     PYTHONUNBUFFERED="1" \
     PYTHONDONTWRITEBYTECODE="1"
 
 RUN addgroup --system redisui \
- && adduser --system --ingroup redisui redisui
+ && adduser --system --ingroup redisui redisui \
+ && mkdir -p /app/data \
+ && chown -R redisui:redisui /app/data
 USER redisui
 
 EXPOSE 5540

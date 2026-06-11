@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
@@ -9,18 +10,61 @@ from pathlib import Path
 from typing import Any, Literal
 
 import redis.asyncio as redis
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from redis_console.diagnostics import run_full_debug
+from redis_console.schemas import DebugRun, DebugRunList, OverviewResponse
+from redis_console.store import ReportStore, markdown_report
 
 REDIS_URL = os.getenv("REDIS_CACHE_URL", "redis://redis-cache:6379/0")
 MAX_VALUE_BYTES = int(os.getenv("REDIS_UI_MAX_VALUE_BYTES", "1048576"))
 MAX_SCAN_COUNT = 250
 MAX_COLLECTION_ITEMS = 500
 UI_PATH = Path(__file__).with_name("redis_ui.html")
+ASSET_PATH = Path(__file__).with_name("redis_ui")
+DB_PATH = os.getenv("REDIS_UI_DB_PATH", "/app/data/redis-console.db")
+REPORT_RETENTION_DAYS = int(os.getenv("REDIS_UI_REPORT_RETENTION_DAYS", "30"))
+REPORT_MAX_COUNT = int(os.getenv("REDIS_UI_REPORT_MAX_COUNT", "200"))
+OVERVIEW_CACHE_TTL_S = float(os.getenv("REDIS_UI_OVERVIEW_CACHE_TTL_S", "10"))
 
-app = FastAPI(title="Redis Cache Console", version="1.0.0")
+app = FastAPI(title="Redis Operations Console", version="2.0.0")
+if ASSET_PATH.exists():
+    app.mount("/assets", StaticFiles(directory=ASSET_PATH), name="redis-ui-assets")
+
+_store: ReportStore | None = None
+_overview_cache: tuple[float, dict[str, Any]] | None = None
+_overview_lock = asyncio.Lock()
+_event_version = 0
+
+
+def store() -> ReportStore:
+    global _store
+    if _store is None:
+        _store = ReportStore(DB_PATH, REPORT_RETENTION_DAYS, REPORT_MAX_COUNT)
+    return _store
+
+
+def touch_events() -> None:
+    global _event_version
+    _event_version += 1
+
+
+@app.exception_handler(HTTPException)
+async def http_error_contract(request: Request, exc: HTTPException):
+    if request.url.path.startswith("/api/v1/"):
+        return JSONResponse(status_code=exc.status_code, content={"error": {"code": "http_error", "message": str(exc.detail), "detail": exc.detail}})
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_contract(request: Request, exc: RequestValidationError):
+    if request.url.path.startswith("/api/v1/"):
+        return JSONResponse(status_code=422, content={"error": {"code": "validation_error", "message": "Request validation failed.", "detail": exc.errors()}})
+    return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
 
 def client(db: int = 0) -> redis.Redis:
@@ -67,6 +111,9 @@ class TtlRequest(BaseModel):
 
 @app.get("/", include_in_schema=False)
 async def index():
+    modular = ASSET_PATH / "index.html"
+    if modular.exists():
+        return FileResponse(modular, media_type="text/html")
     return FileResponse(UI_PATH, media_type="text/html")
 
 
@@ -81,8 +128,7 @@ async def health():
         await r.aclose()
 
 
-@app.get("/api/overview")
-async def overview():
+async def overview_data():
     r = client()
     try:
         started = time.perf_counter()
@@ -140,6 +186,83 @@ async def overview():
         raise HTTPException(status_code=503, detail=f"Redis unavailable: {exc}") from exc
     finally:
         await r.aclose()
+
+
+async def cached_overview(force: bool = False):
+    global _overview_cache
+    now = time.monotonic()
+    if not force and _overview_cache and now - _overview_cache[0] < OVERVIEW_CACHE_TTL_S:
+        return _overview_cache[1]
+    async with _overview_lock:
+        now = time.monotonic()
+        if not force and _overview_cache and now - _overview_cache[0] < OVERVIEW_CACHE_TTL_S:
+            return _overview_cache[1]
+        value = await overview_data()
+        _overview_cache = (time.monotonic(), value)
+        touch_events()
+        return value
+
+
+@app.get("/api/overview")
+async def overview():
+    return await cached_overview()
+
+
+@app.get("/api/v1/overview", response_model=OverviewResponse)
+async def versioned_overview(force: bool = False):
+    data = await cached_overview(force=force)
+    reports = await asyncio.to_thread(store().list, 5)
+    broad_bind = data["config"].get("bind") in {"*", "* -::*"} or "*" in str(data["config"].get("bind", "")).split()
+    warnings = []
+    if broad_bind or data["config"].get("protected-mode") == "no":
+        warnings.append("Redis accepts connections broadly and protected mode is disabled.")
+    if data["memory"].get("mem_fragmentation_ratio", 0) and float(data["memory"]["mem_fragmentation_ratio"]) > 2:
+        warnings.append("Memory fragmentation is above 2x.")
+    return {"redis": data, "warnings": warnings, "recent_reports": reports, "timestamp": time.time()}
+
+
+@app.get("/api/v1/events")
+async def events(request: Request):
+    async def stream():
+        seen = -1
+        while not await request.is_disconnected():
+            event = "update" if seen != _event_version else "heartbeat"
+            seen = _event_version
+            yield f"event: {event}\ndata: {json.dumps({'version': seen, 'timestamp': time.time()})}\n\n"
+            await asyncio.sleep(15)
+    return StreamingResponse(stream(), media_type="text/event-stream")
+
+
+@app.post("/api/v1/debug/runs", response_model=DebugRun)
+async def create_debug_run():
+    run = await run_full_debug(client)
+    await asyncio.to_thread(store().save, run)
+    touch_events()
+    return run
+
+
+@app.get("/api/v1/debug/runs", response_model=DebugRunList)
+async def list_debug_runs(limit: int = Query(50, ge=1, le=200)):
+    reports = await asyncio.to_thread(store().list, limit)
+    return {"count": len(reports), "runs": reports}
+
+
+@app.get("/api/v1/debug/runs/{run_id}", response_model=DebugRun)
+async def get_debug_run(run_id: str):
+    run = await asyncio.to_thread(store().get, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Debug report not found.")
+    return run
+
+
+@app.get("/api/v1/debug/runs/{run_id}/report")
+async def debug_report(run_id: str, format: str = Query("markdown", pattern="^(markdown|json)$")):
+    run = await asyncio.to_thread(store().get, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Debug report not found.")
+    if format == "json":
+        return JSONResponse(run, headers={"Content-Disposition": f'attachment; filename="redis-debug-{run_id}.json"'})
+    return PlainTextResponse(markdown_report(run), media_type="text/markdown", headers={"Content-Disposition": f'attachment; filename="redis-debug-{run_id}.md"'})
 
 
 @app.get("/api/keys")

@@ -112,11 +112,17 @@ services:
     environment:
       REDIS_CACHE_URL: redis://redis-cache:6379/0
       REDIS_UI_MAX_VALUE_BYTES: "1048576"
+      REDIS_UI_DB_PATH: /app/data/redis-console.db
+      REDIS_UI_REPORT_RETENTION_DAYS: ${REDIS_UI_REPORT_RETENTION_DAYS:-30}
+      REDIS_UI_REPORT_MAX_COUNT: ${REDIS_UI_REPORT_MAX_COUNT:-200}
+      REDIS_UI_OVERVIEW_CACHE_TTL_S: ${REDIS_UI_OVERVIEW_CACHE_TTL_S:-10}
     depends_on:
       redis-cache:
         condition: service_healthy
     ports:
       - 127.0.0.1:5540:5540
+    volumes:
+      - redis-ui-data:/app/data
     networks:
       - llm-net
     dns: *airgap-dns
@@ -471,3 +477,5 @@ volumes:
     name: open-webui-live-data
   monitor-daemon-data:
     name: monitor-daemon-data
+  redis-ui-data:
+    name: redis-ui-data
