@@ -23,7 +23,15 @@ search:
 engines:
   - name: brave
     disabled: true
+  - name: bing
+    disabled: false
+  - name: mojeek
+    disabled: true
   - name: duckduckgo
     disabled: true
   - name: google
+    disabled: true
+  - name: startpage
+    disabled: true
+  - name: wikidata
     disabled: true

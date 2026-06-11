@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Web Tools Control Center</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%2355d9b3'/%3E%3Ctext x='32' y='40' text-anchor='middle' font-family='Arial' font-size='25' font-weight='700' fill='%23070b12'%3EWT%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand"><span>WT</span><div><strong>Web Tools</strong><small>Control Center</small></div></div>
+    <nav id="nav" aria-label="Primary navigation">
+      <button class="active" data-view="overview">Overview</button>
+      <button data-view="validation">Validation Suite</button>
+      <button data-view="prompt">Prompt Lab</button>
+      <button data-view="search">Web Search</button>
+      <button data-view="extraction">Extraction</button>
+      <button data-view="monitor">Semantic Monitor</button>
+      <button data-view="history">Run History</button>
+    </nav>
+    <div class="sidebar-foot"><span id="event-dot"></span><span id="event-label">Connecting updates</span></div>
+  </aside>
+
+  <main>
+    <header>
+      <div><p class="eyebrow">LOCAL OPERATIONS</p><h1 id="page-title">Overview</h1></div>
+      <div class="header-actions"><span id="last-updated">Not checked</span><button class="secondary" id="refresh">Refresh</button></div>
+    </header>
+
+    <section class="view active" id="overview">
+      <div class="hero">
+        <div><p class="eyebrow">SYSTEM POSTURE</p><h2 id="system-state">Checking services...</h2><p>One view for search, extraction, prompt completion, and evidence-backed validation.</p></div>
+        <button id="run-suite-hero">Run safe validation</button>
+      </div>
+      <div class="metrics" id="metrics"></div>
+      <h3>Connected services</h3><div class="service-grid" id="services"></div>
+      <h3>Recent evidence</h3><div id="recent-runs" class="stack"></div>
+    </section>
+
+    <section class="view" id="validation">
+      <div class="panel">
+        <div class="panel-head"><div><h2>One-click validation suite</h2><p>Runs real, read-only checks across the local web toolchain.</p></div><button id="run-suite">Start validation</button></div>
+        <div class="form-grid">
+          <label>Search query<input id="suite-query" value="Open WebUI web search tools"></label>
+          <label>Public extraction URL<input id="suite-url" value="https://example.com"></label>
+          <label class="check"><input type="checkbox" id="suite-monitor"> Include optional semantic baseline/drift evaluation</label>
+        </div>
+      </div>
+      <div id="suite-results" class="stack empty">No validation run in this session.</div>
+    </section>
+
+    <section class="view" id="prompt">
+      <div class="panel">
+        <div class="panel-head"><div><h2>Open WebUI Prompt Lab</h2><p id="prompt-status">Checking server-side configuration...</p></div><span class="badge" id="prompt-badge">Checking</span></div>
+        <div class="form-grid">
+          <label>Model<select id="prompt-model"></select></label>
+          <label class="wide">Prompt<textarea id="prompt-text">Explain in two sentences why a web research answer should cite its sources.</textarea></label>
+          <label>Expected text, comma separated<input id="prompt-expected" placeholder="sources, evidence"></label>
+          <label class="check"><input type="checkbox" id="prompt-citations"> Require citations</label>
+          <label class="check"><input type="checkbox" id="prompt-tools"> Require tool call</label>
+        </div>
+        <button id="prompt-run">Verify completion</button>
+      </div>
+      <div id="prompt-result" class="result empty">No prompt verification yet.</div>
+    </section>
+
+    <section class="view" id="search">
+      <div class="panel">
+        <h2>Web Search</h2>
+        <div class="inline-form"><input id="search-query" value="latest Open WebUI documentation"><button id="search-run">Search SearXNG</button></div>
+      </div>
+      <div id="search-results" class="stack empty">Search results will appear here.</div>
+    </section>
+
+    <section class="view" id="extraction">
+      <div class="tabs" id="extract-tabs"><button class="active" data-tool="deep">Deep Web MCP</button><button data-tool="crawl">Crawl4AI</button><button data-tool="firecrawl">Firecrawl</button></div>
+      <div class="panel">
+        <h2 id="extract-title">Deep Web MCP extraction</h2>
+        <div class="inline-form"><input id="extract-url" value="https://example.com"><button id="extract-run">Extract</button></div>
+      </div>
+      <div id="extract-result" class="result empty">Extraction output will appear here.</div>
+    </section>
+
+    <section class="view" id="monitor">
+      <div class="panel">
+        <h2>Semantic Monitor</h2><p>This action can establish or update a Qdrant baseline. It is intentionally separate from the safe suite.</p>
+        <div class="inline-form"><input id="monitor-url" value="https://example.com"><button id="monitor-run" class="warn">Evaluate state</button></div>
+      </div>
+      <div id="monitor-result" class="result empty">No semantic evaluation in this session.</div>
+    </section>
+
+    <section class="view" id="history">
+      <div class="panel-head"><div><h2>Durable run history</h2><p>Retained for 30 days, capped at 500 runs.</p></div><button class="secondary" id="history-refresh">Refresh</button></div>
+      <div id="history-runs" class="stack"></div>
+    </section>
+  </main>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="/assets/app.js" defer></script>
+</body>
+</html>

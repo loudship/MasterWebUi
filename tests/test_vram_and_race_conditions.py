@@ -52,7 +52,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import pytest_asyncio
-from aioresponses import aioresponses
 
 # ---------------------------------------------------------------------------
 # Bring the module under test into scope.
@@ -119,6 +118,49 @@ def _fake_process(returncode: int = 0, stdout: bytes = b"ok", stderr: bytes = b"
     return proc
 
 
+class _FakeResponse:
+    def __init__(self, payload: dict | None = None, status: int = 200, json_error=None):
+        self.payload = payload
+        self.status = status
+        self.json_error = json_error
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return None
+
+    async def json(self, **_kwargs):
+        if self.json_error:
+            raise self.json_error
+        return self.payload
+
+
+class _RaisingResponse:
+    def __init__(self, error):
+        self.error = error
+
+    async def __aenter__(self):
+        raise self.error
+
+    async def __aexit__(self, *_args):
+        return None
+
+
+class _FakeSession:
+    """Minimal aiohttp-compatible success-path session for arbiter tests."""
+
+    def __init__(self, payload: dict | None = None, status: int = 200, json_error=None, enter_error=None):
+        self.response = (
+            _RaisingResponse(enter_error)
+            if enter_error
+            else _FakeResponse(payload, status, json_error)
+        )
+
+    def get(self, *_args, **_kwargs):
+        return self.response
+
+
 class TestLoadedModelExtraction:
 
     def test_current_api_ignores_models_not_loaded_into_memory(self):
@@ -148,12 +190,7 @@ class TestEvictionDecisionTree:
         # Override per-model estimate to something safely below ceiling
         with patch.object(_mod, "VRAM_PER_MODEL_ESTIMATE", _ONE_MODEL_BELOW):
             with patch.object(arbiter, "_evict_model_async", new_callable=AsyncMock) as mock_evict:
-                with aioresponses() as m:
-                    m.get(LM_STUDIO_API, payload=_make_model_response(MODEL_A))
-                    import aiohttp
-                    connector = aiohttp.TCPConnector()
-                    async with aiohttp.ClientSession(connector=connector) as session:
-                        await arbiter._poll_vram_state(session)
+                await arbiter._poll_vram_state(_FakeSession(_make_model_response(MODEL_A)))
 
         mock_evict.assert_not_called()
 
@@ -166,11 +203,7 @@ class TestEvictionDecisionTree:
         with patch.object(_mod, "VRAM_PER_MODEL_ESTIMATE", exact_per_model):
             with patch.object(arbiter, "_evict_model_async", new_callable=AsyncMock,
                               return_value=True) as mock_evict:
-                with aioresponses() as m:
-                    m.get(LM_STUDIO_API, payload=_make_model_response(MODEL_A))
-                    import aiohttp
-                    async with aiohttp.ClientSession() as session:
-                        await arbiter._poll_vram_state(session)
+                await arbiter._poll_vram_state(_FakeSession(_make_model_response(MODEL_A)))
 
         mock_evict.assert_called_once_with(MODEL_A)
 
@@ -187,11 +220,7 @@ class TestEvictionDecisionTree:
             proc = _fake_process(returncode=0)
             with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock,
                        return_value=proc) as mock_exec:
-                with aioresponses() as m:
-                    m.get(LM_STUDIO_API, payload=_make_model_response(MODEL_A))
-                    import aiohttp
-                    async with aiohttp.ClientSession() as session:
-                        await arbiter._poll_vram_state(session)
+                await arbiter._poll_vram_state(_FakeSession(_make_model_response(MODEL_A)))
 
         # Verify --ttl 300 was in the subprocess args
         call_args = mock_exec.call_args
@@ -217,11 +246,9 @@ class TestEvictionDecisionTree:
                 arbiter.resident_since[MODEL_A] = t0
                 arbiter.resident_since[MODEL_B] = t0 + 100   # newer
 
-                with aioresponses() as m:
-                    m.get(LM_STUDIO_API, payload=_make_model_response(MODEL_A, MODEL_B))
-                    import aiohttp
-                    async with aiohttp.ClientSession() as session:
-                        await arbiter._poll_vram_state(session)
+                await arbiter._poll_vram_state(
+                    _FakeSession(_make_model_response(MODEL_A, MODEL_B))
+                )
 
         # Must evict MODEL_A (older)
         mock_evict.assert_called_once_with(MODEL_A)
@@ -239,11 +266,9 @@ class TestEvictionDecisionTree:
                 arbiter.resident_since[MODEL_A] = t0        # older → LRU
                 arbiter.resident_since[MODEL_B] = t0 + 50  # newer
 
-                with aioresponses() as m:
-                    m.get(LM_STUDIO_API, payload=_make_model_response(MODEL_A, MODEL_B))
-                    import aiohttp
-                    async with aiohttp.ClientSession() as session:
-                        await arbiter._poll_vram_state(session)
+                await arbiter._poll_vram_state(
+                    _FakeSession(_make_model_response(MODEL_A, MODEL_B))
+                )
 
         mock_evict.assert_called_once_with(MODEL_A)
 
@@ -313,11 +338,11 @@ class TestSilentExceptionHandling:
         import aiohttp
 
         async def setup(arb, session):
-            with aioresponses() as m:
-                m.get(LM_STUDIO_API, exception=aiohttp.ClientConnectorError(
+            await arb._poll_vram_state(
+                _FakeSession(enter_error=aiohttp.ClientConnectorError(
                     connection_key=MagicMock(), os_error=ConnectionRefusedError()
                 ))
-                await arb._poll_vram_state(session)
+            )
 
         await self._run_poll_expecting_warning(arbiter, caplog, setup)
 
@@ -326,9 +351,7 @@ class TestSilentExceptionHandling:
     @pytest.mark.asyncio
     async def test_B2_socket_timeout(self, arbiter, caplog):
         async def setup(arb, session):
-            with aioresponses() as m:
-                m.get(LM_STUDIO_API, exception=asyncio.TimeoutError())
-                await arb._poll_vram_state(session)
+            await arb._poll_vram_state(_FakeSession(enter_error=asyncio.TimeoutError()))
 
         await self._run_poll_expecting_warning(arbiter, caplog, setup)
 
@@ -339,9 +362,9 @@ class TestSilentExceptionHandling:
         import aiohttp
 
         async def setup(arb, session):
-            with aioresponses() as m:
-                m.get(LM_STUDIO_API, exception=aiohttp.ServerDisconnectedError())
-                await arb._poll_vram_state(session)
+            await arb._poll_vram_state(
+                _FakeSession(enter_error=aiohttp.ServerDisconnectedError())
+            )
 
         await self._run_poll_expecting_warning(arbiter, caplog, setup)
 
@@ -351,15 +374,11 @@ class TestSilentExceptionHandling:
     async def test_B4_http_503(self, arbiter, caplog):
         import logging
 
-        with aioresponses() as m:
-            m.get(LM_STUDIO_API, status=503, body=b"Service Unavailable")
-            import aiohttp
-            with caplog.at_level(logging.WARNING, logger="vram_arbiter"):
-                async with aiohttp.ClientSession() as session:
-                    try:
-                        await arbiter._poll_vram_state(session)
-                    except Exception as exc:
-                        pytest.fail(f"Raised exception on HTTP 503: {exc}")
+        with caplog.at_level(logging.WARNING, logger="vram_arbiter"):
+            try:
+                await arbiter._poll_vram_state(_FakeSession(status=503))
+            except Exception as exc:
+                pytest.fail(f"Raised exception on HTTP 503: {exc}")
 
         warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
         assert warnings, "Expected WARNING on HTTP 503 — none found."
@@ -370,15 +389,13 @@ class TestSilentExceptionHandling:
     async def test_B5_malformed_json(self, arbiter, caplog):
         import logging
 
-        with aioresponses() as m:
-            m.get(LM_STUDIO_API, status=200, body=b"{not valid json{{")
-            import aiohttp
-            with caplog.at_level(logging.WARNING, logger="vram_arbiter"):
-                async with aiohttp.ClientSession() as session:
-                    try:
-                        await arbiter._poll_vram_state(session)
-                    except Exception as exc:
-                        pytest.fail(f"Raised exception on bad JSON: {exc}")
+        with caplog.at_level(logging.WARNING, logger="vram_arbiter"):
+            try:
+                await arbiter._poll_vram_state(
+                    _FakeSession(json_error=json.JSONDecodeError("bad json", "{", 0))
+                )
+            except Exception as exc:
+                pytest.fail(f"Raised exception on bad JSON: {exc}")
 
         warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
         assert warnings, "Expected WARNING on malformed JSON — none found."
@@ -390,9 +407,7 @@ class TestSilentExceptionHandling:
         import aiohttp
 
         async def setup(arb, session):
-            with aioresponses() as m:
-                m.get(LM_STUDIO_API, exception=aiohttp.ClientOSError())
-                await arb._poll_vram_state(session)
+            await arb._poll_vram_state(_FakeSession(enter_error=aiohttp.ClientOSError()))
 
         await self._run_poll_expecting_warning(arbiter, caplog, setup)
 
@@ -421,11 +436,9 @@ class TestLRUSelection:
         with patch.object(_mod, "VRAM_PER_MODEL_ESTIMATE", over_ceiling // 3 + 1):
             with patch.object(arbiter, "_evict_model_async", new_callable=AsyncMock,
                               return_value=True) as mock_evict:
-                with aioresponses() as m:
-                    m.get(LM_STUDIO_API, payload=_make_model_response(*models.keys()))
-                    import aiohttp
-                    async with aiohttp.ClientSession() as session:
-                        await arbiter._poll_vram_state(session)
+                await arbiter._poll_vram_state(
+                    _FakeSession(_make_model_response(*models.keys()))
+                )
 
         mock_evict.assert_called_once_with("model-alpha")
 
@@ -440,12 +453,9 @@ class TestLRUSelection:
         with patch.object(_mod, "VRAM_PER_MODEL_ESTIMATE", over_ceiling // 2 + 1):
             with patch.object(arbiter, "_evict_model_async", new_callable=AsyncMock,
                               return_value=True) as mock_evict:
-                with aioresponses() as m:
-                    m.get(LM_STUDIO_API,
-                          payload=_make_model_response("old-model", "new-model"))
-                    import aiohttp
-                    async with aiohttp.ClientSession() as session:
-                        await arbiter._poll_vram_state(session)
+                await arbiter._poll_vram_state(
+                    _FakeSession(_make_model_response("old-model", "new-model"))
+                )
 
         # Must NOT evict "new-model"
         evicted = mock_evict.call_args.args[0]
@@ -515,17 +525,18 @@ class TestSubprocessEvictionMechanics:
 
         proc = MagicMock()
         proc.returncode = None
-        proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError)
+        proc.communicate = AsyncMock(
+            side_effect=[asyncio.TimeoutError(), (b"", b"")]
+        )
         proc.kill = MagicMock()
 
         with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock,
                    return_value=proc):
-            with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError):
-                with caplog.at_level(logging.ERROR, logger="vram_arbiter"):
-                    try:
-                        result = await arbiter._evict_model_async(MODEL_A)
-                    except Exception as exc:
-                        pytest.fail(f"TimeoutError escaped eviction: {exc}")
+            with caplog.at_level(logging.ERROR, logger="vram_arbiter"):
+                try:
+                    result = await arbiter._evict_model_async(MODEL_A)
+                except Exception as exc:
+                    pytest.fail(f"TimeoutError escaped eviction: {exc}")
 
         assert result is False
         errors = [r for r in caplog.records if r.levelno >= logging.ERROR]

@@ -22,6 +22,8 @@ FROM monitor-daemon@sha256:f979055cc5dedfee9d523a380a08c46e85201099b130fd394fe8b
 WORKDIR /app
 COPY monitor_daemon.py ./monitor_daemon.py
 COPY monitor_dashboard.html ./monitor_dashboard.html
+COPY monitor_app ./monitor_app
+COPY monitor_ui ./monitor_ui
 
 # ---------------------------------------------------------------------------
 # Runtime environment defaults (all overridable via docker-compose)
@@ -30,6 +32,16 @@ ENV QDRANT_URL="http://qdrant:6333" \
     QDRANT_COLLECTION="monitor_active" \
     MCP_URL="http://deep-web-mcp:8000" \
     ORCHESTRATOR_URL="http://langgraph-orchestrator:8100" \
+    SEARXNG_URL="http://searxng:8080" \
+    CRAWL4AI_PROXY_URL="http://crawl4ai-proxy:8000" \
+    OPEN_WEBUI_URL="http://open-webui:8080" \
+    BROWSERLESS_URL="http://browserless:3000" \
+    OPEN_WEBUI_PROMPT_MODEL_ID="qwen35" \
+    MONITOR_DB_PATH="/app/data/control-center.db" \
+    DIAGNOSTIC_RETENTION_DAYS="30" \
+    DIAGNOSTIC_MAX_RUNS="500" \
+    PROBE_CACHE_TTL_S="15" \
+    WEB_TOOLS_TIMEOUT_S="90" \
     DRIFT_THRESHOLD="0.15" \
     EMBED_MODEL_NAME="sentence-transformers/all-MiniLM-L6-v2" \
     CPU_THREADS="4" \
@@ -38,6 +50,9 @@ ENV QDRANT_URL="http://qdrant:6333" \
     ALERT_TIMEOUT_S="30" \
     PYTHONUNBUFFERED="1" \
     PYTHONDONTWRITEBYTECODE="1"
+
+USER root
+RUN mkdir -p /app/data && chown -R monitor:monitor /app/data
 
 USER monitor
 

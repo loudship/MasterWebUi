@@ -73,5 +73,49 @@ async def test_overview_reports_backend_and_error_summary(monkeypatch):
 @pytest.mark.asyncio
 async def test_dashboard_asset_is_available():
     response = await monitor.dashboard()
-    assert Path(response.path).name == "monitor_dashboard.html"
+    assert Path(response.path).name == "index.html"
     assert Path(response.path).exists()
+    dashboard = Path(response.path).read_text(encoding="utf-8")
+    assert "Web Tools Control Center" in dashboard
+    assert 'data-view="validation"' in dashboard
+    assert 'data-view="prompt"' in dashboard
+    assert 'data-view="history"' in dashboard
+
+
+@pytest.mark.asyncio
+async def test_web_tools_overview_reports_connected_tools(monkeypatch):
+    async def fake_connectivity():
+        return [
+            {"name": "searxng", "status": "reachable"},
+            {"name": "crawl4ai", "status": "offline"},
+        ]
+
+    monkeypatch.setattr(monitor, "_backend_connectivity", fake_connectivity)
+    overview = await monitor.web_tools_overview()
+
+    assert overview["summary"]["connected"] == 1
+    assert overview["summary"]["total"] == 2
+    assert overview["summary"]["health_percent"] == 50
+
+
+@pytest.mark.asyncio
+async def test_crawl_and_firecrawl_fallback_use_local_compatibility_bridge(monkeypatch):
+    async def fake_scrape(url, timeout_seconds):
+        return {"mode": "crawl4ai", "url": url, "content": "example", "metadata": {}}
+
+    monkeypatch.setattr(monitor, "_crawl4ai_compatibility_scrape", fake_scrape)
+    monkeypatch.setattr(monitor, "FIRECRAWL_URL", "")
+    request = monitor.ScrapeRequest(url="https://example.com", timeout_seconds=15)
+
+    crawl = await monitor.web_tools_crawl(request)
+    firecrawl = await monitor.web_tools_firecrawl(request)
+
+    assert crawl["mode"] == "crawl4ai"
+    assert firecrawl["mode"] == "crawl4ai_compatibility"
+    assert crawl["content"] == firecrawl["content"] == "example"
+
+
+def test_scrape_rejects_non_web_urls():
+    with pytest.raises(monitor.HTTPException) as exc:
+        monitor._require_web_url("file:///etc/passwd")
+    assert exc.value.status_code == 422

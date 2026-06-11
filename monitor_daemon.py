@@ -40,21 +40,38 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import ipaddress
 import json
 import logging
 import os
+import socket
 import time
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
+from urllib.parse import urlparse
 
 import aiohttp
 import httpx
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+
+from monitor_app.schemas import (
+    ControlOverviewResponse,
+    DiagnosticRunListResponse,
+    DiagnosticRunRecord,
+    DiagnosticRunRequest,
+    PromptModelsResponse,
+    PromptVerifyRequest,
+    PromptVerifyResponse,
+    ServiceProbe,
+)
+from monitor_app.store import RunStore, run_markdown
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -76,6 +93,21 @@ COLLECTION: str     = os.getenv("QDRANT_COLLECTION", "monitor_active")
 
 # deep-web-mcp service endpoint
 MCP_URL: str        = os.getenv("MCP_URL",         "http://deep-web-mcp:8000")
+SEARXNG_URL: str = os.getenv("SEARXNG_URL", "http://searxng:8080")
+CRAWL4AI_PROXY_URL: str = os.getenv(
+    "CRAWL4AI_PROXY_URL", "http://crawl4ai-proxy:8000"
+)
+FIRECRAWL_URL: str = os.getenv("FIRECRAWL_URL", "").rstrip("/")
+FIRECRAWL_API_KEY: str = os.getenv("FIRECRAWL_API_KEY", "")
+OPEN_WEBUI_URL: str = os.getenv("OPEN_WEBUI_URL", "http://open-webui:8080")
+BROWSERLESS_URL: str = os.getenv("BROWSERLESS_URL", "http://browserless:3000")
+WEB_TOOLS_TIMEOUT_S: float = float(os.getenv("WEB_TOOLS_TIMEOUT_S", "90"))
+OPEN_WEBUI_API_KEY: str = os.getenv("OPEN_WEBUI_API_KEY", "")
+OPEN_WEBUI_PROMPT_MODEL_ID: str = os.getenv("OPEN_WEBUI_PROMPT_MODEL_ID", "qwen35")
+MONITOR_DB_PATH: str = os.getenv("MONITOR_DB_PATH", "/app/data/control-center.db")
+DIAGNOSTIC_RETENTION_DAYS: int = int(os.getenv("DIAGNOSTIC_RETENTION_DAYS", "30"))
+DIAGNOSTIC_MAX_RUNS: int = int(os.getenv("DIAGNOSTIC_MAX_RUNS", "500"))
+PROBE_CACHE_TTL_S: float = float(os.getenv("PROBE_CACHE_TTL_S", "15"))
 
 # LangGraph orchestrator alert webhook
 ORCHESTRATOR_URL: str = os.getenv(
@@ -142,7 +174,12 @@ async def _get_embed_model():
                 EMBED_MODEL_NAME, CPU_THREADS,
             )
             model = SentenceTransformer(EMBED_MODEL_NAME, device="cpu")
-            logger.info("[EMBED] Model loaded — dim=%d", model.get_sentence_embedding_dimension())
+            dimension = (
+                model.get_embedding_dimension()
+                if hasattr(model, "get_embedding_dimension")
+                else model.get_sentence_embedding_dimension()
+            )
+            logger.info("[EMBED] Model loaded — dim=%d", dimension)
             return model
 
         # Run blocking model load in a thread pool without blocking the event loop
@@ -549,7 +586,15 @@ async def lifespan(app: FastAPI):
     Application lifespan: pre-warm the embedding model on startup
     so the first evaluation request does not bear the cold-load penalty.
     """
-    logger.info("[MONITOR] Daemon starting — pre-warming CPU embedding model...")
+    global _run_store
+    logger.info("[MONITOR] Daemon starting — initializing control center...")
+    _run_store = RunStore(
+        MONITOR_DB_PATH,
+        retention_days=DIAGNOSTIC_RETENTION_DAYS,
+        max_runs=DIAGNOSTIC_MAX_RUNS,
+    )
+    logger.info("[CONTROL] Run history ready at %s", MONITOR_DB_PATH)
+    logger.info("[MONITOR] Pre-warming CPU embedding model...")
     try:
         await _get_embed_model()
         logger.info("[MONITOR] Embedding model ready.")
@@ -569,7 +614,64 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+
+@app.exception_handler(HTTPException)
+async def http_exception_contract(request: Request, exc: HTTPException):
+    if request.url.path.startswith("/api/v1/"):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "error": {
+                    "code": "http_error",
+                    "message": str(exc.detail),
+                    "detail": exc.detail,
+                }
+            },
+            headers=exc.headers,
+        )
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail}, headers=exc.headers)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_contract(request: Request, exc: RequestValidationError):
+    if request.url.path.startswith("/api/v1/"):
+        return JSONResponse(
+            status_code=422,
+            content={
+                "error": {
+                    "code": "validation_error",
+                    "message": "Request validation failed.",
+                    "detail": exc.errors(),
+                }
+            },
+        )
+    return JSONResponse(status_code=422, content={"detail": exc.errors()})
+
 _DASHBOARD_PATH = Path(__file__).with_name("monitor_dashboard.html")
+_UI_PATH = Path(__file__).with_name("monitor_ui")
+_run_store: RunStore | None = None
+_probe_cache: tuple[float, list[dict]] | None = None
+_probe_lock = asyncio.Lock()
+_event_version = 0
+
+if _UI_PATH.exists():
+    app.mount("/assets", StaticFiles(directory=_UI_PATH), name="control-center-assets")
+
+
+def _store() -> RunStore:
+    global _run_store
+    if _run_store is None:
+        _run_store = RunStore(
+            MONITOR_DB_PATH,
+            retention_days=DIAGNOSTIC_RETENTION_DAYS,
+            max_runs=DIAGNOSTIC_MAX_RUNS,
+        )
+    return _run_store
+
+
+def _touch_events() -> None:
+    global _event_version
+    _event_version += 1
 
 
 async def _probe_backend(
@@ -578,11 +680,13 @@ async def _probe_backend(
     label: str,
     url: str,
     expected_statuses: tuple[int, ...] = (200,),
+    headers: Optional[dict] = None,
 ) -> dict:
     started = time.perf_counter()
     try:
         async with session.get(
             url,
+            headers=headers,
             timeout=aiohttp.ClientTimeout(total=3.0),
         ) as response:
             latency_ms = round((time.perf_counter() - started) * 1000)
@@ -608,19 +712,71 @@ async def _probe_backend(
         }
 
 
-async def _backend_connectivity() -> list[dict]:
-    connector = aiohttp.TCPConnector(limit=3, ttl_dns_cache=30)
+async def _uncached_backend_connectivity() -> list[dict]:
+    connector = aiohttp.TCPConnector(limit=8, ttl_dns_cache=30)
     async with aiohttp.ClientSession(connector=connector) as session:
-        return await asyncio.gather(
+        probes = [
+            _probe_backend(
+                session,
+                "open_webui",
+                "Open WebUI",
+                f"{OPEN_WEBUI_URL}/health",
+            ),
+            _probe_backend(
+                session,
+                "searxng",
+                "SearXNG Search",
+                f"{SEARXNG_URL}/search?q=dashboard-connectivity-probe&format=json",
+                headers={"X-Forwarded-For": "127.0.0.1", "X-Real-IP": "127.0.0.1"},
+            ),
+            _probe_backend(
+                session,
+                "crawl4ai_proxy",
+                "Crawl4AI Proxy",
+                CRAWL4AI_PROXY_URL,
+                expected_statuses=(200, 404),
+            ),
             _probe_backend(
                 session,
                 "deep_web_mcp",
                 "Deep Web MCP",
-                f"{MCP_URL}/extract/status/dashboard-connectivity-probe",
+                f"{MCP_URL}/health",
             ),
             _probe_backend(session, "qdrant", "Qdrant", f"{QDRANT_URL}/aliases"),
             _probe_backend(session, "orchestrator", "LangGraph Orchestrator", f"{ORCHESTRATOR_URL}/health"),
-        )
+            _probe_backend(
+                session,
+                "browserless",
+                "Browserless",
+                f"{BROWSERLESS_URL}/pressure",
+            ),
+        ]
+        if FIRECRAWL_URL:
+            probes.append(
+                _probe_backend(
+                    session,
+                    "firecrawl",
+                    "Firecrawl",
+                    f"{FIRECRAWL_URL}/v1/crawl",
+                    expected_statuses=(200, 401, 404, 405, 422),
+                )
+            )
+        return await asyncio.gather(*probes)
+
+
+async def _backend_connectivity(force: bool = False) -> list[dict]:
+    global _probe_cache
+    now = time.monotonic()
+    if not force and _probe_cache and now - _probe_cache[0] < PROBE_CACHE_TTL_S:
+        return _probe_cache[1]
+    async with _probe_lock:
+        now = time.monotonic()
+        if not force and _probe_cache and now - _probe_cache[0] < PROBE_CACHE_TTL_S:
+            return _probe_cache[1]
+        result = await _uncached_backend_connectivity()
+        _probe_cache = (time.monotonic(), result)
+        _touch_events()
+        return result
 
 
 # ---------------------------------------------------------------------------
@@ -654,6 +810,297 @@ class EvaluateResponse(BaseModel):
     alert_sent: bool           = False
     message:    str            = ""
     timestamp:  float          = Field(default_factory=time.time)
+
+
+class SearchRequest(BaseModel):
+    query: str = Field(..., min_length=1, max_length=500)
+    result_count: int = Field(8, ge=1, le=30)
+    categories: str = Field("general", max_length=100)
+    engines: str = Field("bing", max_length=200)
+    language: str = Field("en", max_length=20)
+    safe_search: int = Field(1, ge=0, le=2)
+
+
+class ScrapeRequest(BaseModel):
+    url: str = Field(..., min_length=8, max_length=2048)
+    timeout_seconds: int = Field(60, ge=5, le=180)
+
+
+class DeepWebSearchRequest(BaseModel):
+    query: str = Field(..., min_length=1, max_length=500)
+    engine: str = Field("bing", min_length=1, max_length=100)
+
+
+class DeepWebExtractRequest(BaseModel):
+    url: str = Field(..., min_length=8, max_length=2048)
+
+
+def _require_web_url(url: str) -> str:
+    parsed = urlparse(url.strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise HTTPException(status_code=422, detail="A valid http:// or https:// URL is required.")
+    return url.strip()
+
+
+async def _require_safe_public_url(url: str) -> str:
+    normalized = _require_web_url(url)
+    parsed = urlparse(normalized)
+    hostname = parsed.hostname or ""
+    if hostname.lower().endswith(".onion") or hostname.lower() == "localhost":
+        raise HTTPException(status_code=422, detail="Private and anonymous-network targets are not allowed.")
+    try:
+        addresses = await asyncio.to_thread(
+            socket.getaddrinfo, hostname, parsed.port or (443 if parsed.scheme == "https" else 80)
+        )
+    except socket.gaierror as exc:
+        raise HTTPException(status_code=422, detail=f"Target hostname could not be resolved: {hostname}") from exc
+    for address in {item[4][0] for item in addresses}:
+        ip = ipaddress.ip_address(address)
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_unspecified
+        ):
+            raise HTTPException(status_code=422, detail="Private or reserved network targets are not allowed.")
+    return normalized
+
+
+async def _response_json_or_text(response: aiohttp.ClientResponse):
+    text = await response.text()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return {"text": text}
+
+
+@app.get("/web-tools/config")
+async def web_tools_config():
+    """Return the non-secret integration capabilities used by the dashboard."""
+    return {
+        "firecrawl_mode": "native" if FIRECRAWL_URL else "crawl4ai_compatibility",
+        "firecrawl_configured": bool(FIRECRAWL_URL),
+        "open_webui_url": "http://localhost:8080/",
+        "interfaces": ["overview", "search", "crawl", "firecrawl", "monitor"],
+    }
+
+
+@app.get("/web-tools/overview")
+async def web_tools_overview():
+    backends = await _backend_connectivity()
+    reachable = sum(item["status"] == "reachable" for item in backends)
+    return {
+        "summary": {
+            "connected": reachable,
+            "total": len(backends),
+            "health_percent": round((reachable / len(backends)) * 100) if backends else 0,
+            "firecrawl_mode": "native" if FIRECRAWL_URL else "crawl4ai_compatibility",
+        },
+        "tools": backends,
+        "timestamp": time.time(),
+    }
+
+
+@app.post("/web-tools/search")
+async def web_tools_search(req: SearchRequest):
+    """Run a normalized SearXNG search for the dedicated search workspace."""
+    started = time.perf_counter()
+    params = {
+        "q": req.query,
+        "format": "json",
+        "categories": req.categories,
+        "engines": req.engines,
+        "language": req.language,
+        "safesearch": str(req.safe_search),
+    }
+    timeout = aiohttp.ClientTimeout(total=min(WEB_TOOLS_TIMEOUT_S, 60))
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        try:
+            async with session.get(
+                f"{SEARXNG_URL}/search",
+                params=params,
+                headers={"X-Forwarded-For": "127.0.0.1", "X-Real-IP": "127.0.0.1"},
+            ) as response:
+                payload = await _response_json_or_text(response)
+                if response.status != 200:
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"SearXNG returned HTTP {response.status}.",
+                    )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"SearXNG request failed: {exc}") from exc
+
+    results = payload.get("results", [])[: req.result_count]
+    return {
+        "query": req.query,
+        "count": len(results),
+        "elapsed_ms": round((time.perf_counter() - started) * 1000),
+        "results": [
+            {
+                "title": item.get("title") or item.get("url") or "Untitled result",
+                "url": item.get("url", ""),
+                "content": item.get("content", ""),
+                "engine": item.get("engine") or ", ".join(item.get("engines", [])),
+                "score": item.get("score"),
+            }
+            for item in results
+        ],
+        "answers": payload.get("answers", []),
+    }
+
+
+async def _crawl4ai_compatibility_scrape(url: str, timeout_seconds: int) -> dict:
+    timeout = aiohttp.ClientTimeout(total=timeout_seconds)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.post(
+            f"{CRAWL4AI_PROXY_URL}/crawl",
+            json={"urls": [url]},
+        ) as response:
+            payload = await _response_json_or_text(response)
+            if response.status != 200:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Crawl4AI proxy returned HTTP {response.status}.",
+                )
+    item = payload[0] if isinstance(payload, list) and payload else payload
+    return {
+        "mode": "crawl4ai",
+        "url": url,
+        "content": item.get("page_content", "") if isinstance(item, dict) else "",
+        "metadata": item.get("metadata", {}) if isinstance(item, dict) else {},
+        "raw": payload,
+    }
+
+
+@app.post("/web-tools/crawl")
+async def web_tools_crawl(req: ScrapeRequest):
+    """Scrape a page through the local Crawl4AI compatibility proxy."""
+    url = await _require_safe_public_url(req.url)
+    started = time.perf_counter()
+    try:
+        result = await _crawl4ai_compatibility_scrape(url, req.timeout_seconds)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Crawl4AI request failed: {exc}") from exc
+    result["elapsed_ms"] = round((time.perf_counter() - started) * 1000)
+    return result
+
+
+@app.post("/web-tools/firecrawl")
+async def web_tools_firecrawl(req: ScrapeRequest):
+    """Use native Firecrawl when configured, otherwise the local compatibility bridge."""
+    url = await _require_safe_public_url(req.url)
+    started = time.perf_counter()
+    if not FIRECRAWL_URL:
+        result = await _crawl4ai_compatibility_scrape(url, req.timeout_seconds)
+        result["mode"] = "crawl4ai_compatibility"
+        result["elapsed_ms"] = round((time.perf_counter() - started) * 1000)
+        return result
+
+    headers = {"Content-Type": "application/json"}
+    if FIRECRAWL_API_KEY:
+        headers["Authorization"] = f"Bearer {FIRECRAWL_API_KEY}"
+    timeout = aiohttp.ClientTimeout(total=req.timeout_seconds)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        try:
+            async with session.post(
+                f"{FIRECRAWL_URL}/v1/scrape",
+                json={"url": url, "formats": ["markdown"]},
+                headers=headers,
+            ) as response:
+                payload = await _response_json_or_text(response)
+                if response.status not in (200, 201):
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"Firecrawl returned HTTP {response.status}.",
+                    )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Firecrawl request failed: {exc}") from exc
+    return {
+        "mode": "native_firecrawl",
+        "url": url,
+        "content": payload.get("data", {}).get("markdown", ""),
+        "metadata": payload.get("data", {}).get("metadata", {}),
+        "raw": payload,
+        "elapsed_ms": round((time.perf_counter() - started) * 1000),
+    }
+
+
+@app.post("/web-tools/deep-web/search")
+async def web_tools_deep_web_search(req: DeepWebSearchRequest):
+    """Proxy the Deep Web MCP normalized search contract to the control center."""
+    started = time.perf_counter()
+    timeout = aiohttp.ClientTimeout(total=min(WEB_TOOLS_TIMEOUT_S, 60))
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        try:
+            async with session.post(
+                f"{MCP_URL}/search",
+                json={"target_database": req.engine, "search_query": req.query},
+            ) as response:
+                payload = await _response_json_or_text(response)
+                if response.status != 200:
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"Deep Web MCP search returned HTTP {response.status}.",
+                    )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Deep Web MCP search failed: {exc}") from exc
+    payload["elapsed_ms"] = round((time.perf_counter() - started) * 1000)
+    return payload
+
+
+@app.post("/web-tools/deep-web/extract")
+async def web_tools_deep_web_extract(req: DeepWebExtractRequest):
+    """Run a real extraction through Deep Web MCP and return normalized content."""
+    url = await _require_safe_public_url(req.url)
+    started = time.perf_counter()
+    timeout = aiohttp.ClientTimeout(total=WEB_TOOLS_TIMEOUT_S)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        try:
+            async with session.post(
+                f"{MCP_URL}/extract/stream",
+                json={
+                    "url": url,
+                    "thread_id": "web-tools-control-center",
+                    "session_required": False,
+                },
+            ) as response:
+                if response.status != 200:
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"Deep Web MCP extraction returned HTTP {response.status}.",
+                    )
+                stream = await response.text()
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Deep Web MCP extraction failed: {exc}") from exc
+
+    current_event = None
+    for line in stream.splitlines():
+        line = line.strip()
+        if line.startswith("event:"):
+            current_event = line[6:].strip()
+        elif line.startswith("data:") and current_event in {"result", "error"}:
+            payload = json.loads(line[5:].strip())
+            if current_event == "error":
+                raise HTTPException(status_code=502, detail=payload.get("reason", "Extraction failed."))
+            return {
+                **payload,
+                "mode": "deep_web_mcp",
+                "route": "direct",
+                "elapsed_ms": round((time.perf_counter() - started) * 1000),
+            }
+    raise HTTPException(status_code=502, detail="Deep Web MCP returned no terminal SSE event.")
 
 
 # ===========================================================================
@@ -956,12 +1403,314 @@ async def evaluate(req: EvaluateRequest) -> EvaluateResponse:
 
 
 # ===========================================================================
+# VERSIONED CONTROL CENTER API
+# ===========================================================================
+
+def _model_dict(model: BaseModel) -> dict[str, Any]:
+    return model.model_dump() if hasattr(model, "model_dump") else model.dict()
+
+
+def _http_error(code: str, message: str, status_code: int, detail: Any = None) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={"error": {"code": code, "message": message, "detail": detail}},
+    )
+
+
+async def _prompt_models_payload() -> dict[str, Any]:
+    if not OPEN_WEBUI_API_KEY:
+        return {
+            "configured": False,
+            "default_model_id": OPEN_WEBUI_PROMPT_MODEL_ID,
+            "models": [],
+            "detail": "Set OPEN_WEBUI_API_KEY on monitor-daemon to enable Prompt Lab.",
+        }
+    headers = {"Authorization": f"Bearer {OPEN_WEBUI_API_KEY}"}
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.get(f"{OPEN_WEBUI_URL}/api/models", headers=headers)
+            response.raise_for_status()
+            payload = response.json()
+    except Exception as exc:
+        return {
+            "configured": True,
+            "default_model_id": OPEN_WEBUI_PROMPT_MODEL_ID,
+            "models": [],
+            "detail": f"Model discovery failed: {type(exc).__name__}: {str(exc)[:180]}",
+        }
+    raw_models = payload.get("data", payload if isinstance(payload, list) else [])
+    models = [
+        {"id": item.get("id", ""), "name": item.get("name") or item.get("id", "")}
+        for item in raw_models
+        if isinstance(item, dict) and item.get("id")
+    ]
+    return {
+        "configured": True,
+        "default_model_id": OPEN_WEBUI_PROMPT_MODEL_ID,
+        "models": models,
+        "detail": "",
+    }
+
+
+async def _verify_prompt(req: PromptVerifyRequest) -> PromptVerifyResponse:
+    model_id = req.model_id or OPEN_WEBUI_PROMPT_MODEL_ID
+    if not OPEN_WEBUI_API_KEY:
+        return PromptVerifyResponse(
+            configured=False,
+            passed=False,
+            model_id=model_id,
+            detail="Prompt Lab is unavailable until OPEN_WEBUI_API_KEY is configured.",
+        )
+    started = time.perf_counter()
+    headers = {"Authorization": f"Bearer {OPEN_WEBUI_API_KEY}"}
+    body = {
+        "model": model_id,
+        "messages": [{"role": "user", "content": req.prompt}],
+        "stream": False,
+    }
+    async with httpx.AsyncClient(timeout=WEB_TOOLS_TIMEOUT_S) as client:
+        response = await client.post(
+            f"{OPEN_WEBUI_URL}/api/chat/completions", headers=headers, json=body
+        )
+        if response.status_code >= 400:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Open WebUI completion returned HTTP {response.status_code}.",
+            )
+        payload = response.json()
+    choice = (payload.get("choices") or [{}])[0]
+    message = choice.get("message") or {}
+    content = message.get("content") or payload.get("content") or ""
+    citations = payload.get("citations") or message.get("citations") or payload.get("sources") or []
+    tool_calls = message.get("tool_calls") or payload.get("tool_calls") or []
+    expected_checks = {
+        expected: expected.lower() in content.lower() for expected in req.expected_text
+    }
+    passed = all(expected_checks.values())
+    if req.require_citations:
+        passed = passed and bool(citations)
+    if req.require_tool_call:
+        passed = passed and bool(tool_calls)
+    return PromptVerifyResponse(
+        configured=True,
+        passed=passed,
+        model_id=model_id,
+        content=content,
+        latency_ms=round((time.perf_counter() - started) * 1000),
+        expected_checks=expected_checks,
+        citations=citations if isinstance(citations, list) else [citations],
+        tool_calls=tool_calls if isinstance(tool_calls, list) else [tool_calls],
+        detail="All requested checks passed." if passed else "One or more requested checks failed.",
+    )
+
+
+async def _record_diagnostic_step(
+    run_id: str,
+    name: str,
+    label: str,
+    action,
+    optional: bool = False,
+) -> str:
+    started = time.time()
+    try:
+        evidence = await action()
+        status = "passed"
+        detail = "Completed successfully."
+        if isinstance(evidence, PromptVerifyResponse):
+            evidence = _model_dict(evidence)
+        if isinstance(evidence, dict) and evidence.get("configured") is False:
+            status = "skipped"
+            detail = evidence.get("detail", "Capability is not configured.")
+        elif isinstance(evidence, dict) and evidence.get("passed") is False:
+            status = "failed"
+            detail = evidence.get("detail", "Verification checks failed.")
+    except Exception as exc:
+        status = "skipped" if optional else "failed"
+        detail = f"{type(exc).__name__}: {str(exc)[:500]}"
+        evidence = {"error": detail}
+    await asyncio.to_thread(
+        _store().add_step,
+        run_id,
+        name,
+        label,
+        status,
+        detail,
+        evidence,
+        started,
+        time.time(),
+    )
+    _touch_events()
+    return status
+
+
+async def _run_diagnostic_suite(run_id: str, req: DiagnosticRunRequest) -> dict[str, Any]:
+    statuses: list[str] = []
+
+    async def service_probes():
+        services = await _backend_connectivity(force=True)
+        return {
+            "passed": all(service["status"] == "reachable" for service in services),
+            "services": services,
+        }
+
+    async def search():
+        return await web_tools_search(SearchRequest(query=req.query))
+
+    async def deep_search():
+        return await web_tools_deep_web_search(DeepWebSearchRequest(query=req.query))
+
+    async def deep_extract():
+        return await web_tools_deep_web_extract(DeepWebExtractRequest(url=req.extract_url))
+
+    async def crawl():
+        return await web_tools_crawl(ScrapeRequest(url=req.extract_url, timeout_seconds=60))
+
+    async def firecrawl():
+        return await web_tools_firecrawl(ScrapeRequest(url=req.extract_url, timeout_seconds=60))
+
+    async def prompt():
+        return await _verify_prompt(
+            PromptVerifyRequest(
+                prompt=req.prompt,
+                model_id=req.model_id,
+                expected_text=req.expected_text,
+                require_citations=req.require_citations,
+                require_tool_call=req.require_tool_call,
+            )
+        )
+
+    steps = [
+        ("service_connectivity", "Service connectivity", service_probes, False),
+        ("searxng_search", "Real SearXNG search", search, False),
+        ("deep_web_search", "Deep Web MCP search", deep_search, False),
+        ("deep_web_extract", "Deep Web MCP extraction", deep_extract, False),
+        ("crawl4ai_extract", "Crawl4AI extraction", crawl, False),
+        ("firecrawl_verify", "Firecrawl integration verification", firecrawl, False),
+        ("open_webui_prompt", "Open WebUI prompt completion", prompt, True),
+    ]
+    if req.include_monitor:
+        async def semantic_monitor():
+            return _model_dict(await evaluate(EvaluateRequest(url=req.extract_url)))
+
+        steps.append(("semantic_monitor", "Semantic monitor evaluation", semantic_monitor, False))
+
+    for name, label, action, optional in steps:
+        statuses.append(await _record_diagnostic_step(run_id, name, label, action, optional))
+
+    passed = statuses.count("passed")
+    failed = statuses.count("failed")
+    skipped = statuses.count("skipped")
+    status = "failed" if failed else ("partial" if skipped else "passed")
+    summary = {"passed": passed, "failed": failed, "skipped": skipped, "total": len(statuses)}
+    await asyncio.to_thread(_store().finish_run, run_id, status, summary)
+    _touch_events()
+    return _store().get_run(run_id) or {}
+
+
+@app.get("/api/v1/control/overview", response_model=ControlOverviewResponse)
+async def control_overview():
+    web = await web_tools_overview()
+    operations = await operations_overview()
+    prompt = await _prompt_models_payload()
+    return {
+        "summary": operations["summary"],
+        "services": web["tools"],
+        "capabilities": {
+            "prompt_lab": prompt["configured"],
+            "firecrawl_mode": web["summary"]["firecrawl_mode"],
+            "semantic_monitor": True,
+            "run_history": True,
+        },
+        "recent_runs": await asyncio.to_thread(_store().list_runs, 5),
+        "timestamp": time.time(),
+    }
+
+
+@app.get("/api/v1/control/events")
+async def control_events(request: Request):
+    async def event_stream():
+        seen = -1
+        while not await request.is_disconnected():
+            if seen != _event_version:
+                seen = _event_version
+                yield f"event: update\ndata: {json.dumps({'version': seen, 'timestamp': time.time()})}\n\n"
+            else:
+                yield f"event: heartbeat\ndata: {json.dumps({'timestamp': time.time()})}\n\n"
+            await asyncio.sleep(15)
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@app.post("/api/v1/control/probes/{service}", response_model=ServiceProbe)
+async def control_probe(service: str):
+    probes = await _backend_connectivity(force=True)
+    match = next((probe for probe in probes if probe["name"] == service), None)
+    if not match:
+        return _http_error("unknown_service", f"Unknown service: {service}", 404)
+    return match
+
+
+@app.post("/api/v1/diagnostics/runs", response_model=DiagnosticRunRecord)
+async def create_diagnostic_run(req: DiagnosticRunRequest):
+    run_id = str(uuid.uuid4())
+    await asyncio.to_thread(_store().create_run, run_id, "validation_suite", _model_dict(req))
+    _touch_events()
+    return await _run_diagnostic_suite(run_id, req)
+
+
+@app.get("/api/v1/diagnostics/runs", response_model=DiagnosticRunListResponse)
+async def list_diagnostic_runs(limit: int = Query(50, ge=1, le=500)):
+    runs = await asyncio.to_thread(_store().list_runs, limit)
+    return {"count": len(runs), "runs": runs}
+
+
+@app.get("/api/v1/diagnostics/runs/{run_id}", response_model=DiagnosticRunRecord)
+async def get_diagnostic_run(run_id: str):
+    run = await asyncio.to_thread(_store().get_run, run_id)
+    if not run:
+        return _http_error("run_not_found", "Diagnostic run was not found.", 404)
+    return run
+
+
+@app.get("/api/v1/diagnostics/runs/{run_id}/report")
+async def diagnostic_run_report(run_id: str, format: str = Query("markdown", pattern="^(markdown|json)$")):
+    run = await asyncio.to_thread(_store().get_run, run_id)
+    if not run:
+        return _http_error("run_not_found", "Diagnostic run was not found.", 404)
+    if format == "json":
+        return JSONResponse(run, headers={"Content-Disposition": f'attachment; filename="{run_id}.json"'})
+    return PlainTextResponse(
+        run_markdown(run),
+        media_type="text/markdown",
+        headers={"Content-Disposition": f'attachment; filename="{run_id}.md"'},
+    )
+
+
+@app.get("/api/v1/prompt/models", response_model=PromptModelsResponse)
+async def prompt_models():
+    return await _prompt_models_payload()
+
+
+@app.post("/api/v1/prompt/verify", response_model=PromptVerifyResponse)
+async def prompt_verify(req: PromptVerifyRequest):
+    try:
+        return await _verify_prompt(req)
+    except HTTPException as exc:
+        return _http_error("prompt_verification_failed", "Prompt verification failed.", exc.status_code, exc.detail)
+    except Exception as exc:
+        return _http_error("prompt_verification_failed", "Prompt verification failed.", 502, str(exc)[:500])
+
+
+# ===========================================================================
 # ENDPOINTS: Dashboard and consolidated operations overview
 # ===========================================================================
 
 @app.get("/", include_in_schema=False)
 async def dashboard():
     """Serve the local operator dashboard."""
+    modular_dashboard = _UI_PATH / "index.html"
+    if modular_dashboard.exists():
+        return FileResponse(modular_dashboard, media_type="text/html")
     if not _DASHBOARD_PATH.exists():
         raise HTTPException(status_code=503, detail="Dashboard asset is unavailable.")
     return FileResponse(_DASHBOARD_PATH, media_type="text/html")
@@ -1016,7 +1765,11 @@ async def daemon_status():
     dim = None
     if model_loaded:
         try:
-            dim = _embed_model.get_sentence_embedding_dimension()
+            dim = (
+                _embed_model.get_embedding_dimension()
+                if hasattr(_embed_model, "get_embedding_dimension")
+                else _embed_model.get_sentence_embedding_dimension()
+            )
         except Exception:
             pass
 

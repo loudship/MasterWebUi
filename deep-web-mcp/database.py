@@ -1,12 +1,18 @@
 import os
+from pathlib import Path
 from datetime import datetime
 from sqlalchemy import create_engine, Column, String, LargeBinary, DateTime
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import declarative_base, sessionmaker
 from cryptography.fernet import Fernet
 import json
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 AES_SECRET_KEY = os.environ["AES_SECRET_KEY"]
+
+database_target = make_url(DATABASE_URL)
+if database_target.drivername.startswith("sqlite") and database_target.database not in (None, ":memory:"):
+    Path(database_target.database).parent.mkdir(parents=True, exist_ok=True)
 
 import base64
 import hashlib

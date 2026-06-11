@@ -233,6 +233,7 @@ services:
       ENABLE_DIRECT_CONNECTIONS: "false"
       ENABLE_WEB_SEARCH: "false"
       ENABLE_PERSISTENT_CONFIG: "true"
+      ENABLE_API_KEYS: "true"
       ENABLE_WEBSOCKET_SUPPORT: "false"
       ENABLE_STAR_SESSIONS_MIDDLEWARE: "false"
       ENABLE_OTEL: "false"
@@ -260,7 +261,7 @@ services:
     ports:
       - 127.0.0.1:8080:8080
     volumes:
-      - ./data/open-webui:/app/backend/data
+      - open-webui-data:/app/backend/data
     networks:
       - llm-net
     dns: *airgap-dns
@@ -349,6 +350,9 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/deep_web
       AES_SECRET_KEY: ${AES_SECRET_KEY:?Set AES_SECRET_KEY in the operator environment}
       ALLOWED_TARGET_HOSTS: ${ALLOWED_TARGET_HOSTS:-crawl4ai,searxng,browserless}
+      ALLOW_PUBLIC_TARGETS: "false"
+      SEARXNG_URL: http://searxng:8080
+      PAGE_TIMEOUT_MS: ${DEEP_WEB_PAGE_TIMEOUT_MS:-45000}
     depends_on:
       postgres:
         condition: service_healthy
@@ -359,6 +363,12 @@ services:
     networks:
       - llm-net
     dns: *airgap-dns
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
     restart: unless-stopped
 
   monitor-daemon:
@@ -374,6 +384,19 @@ services:
       QDRANT_COLLECTION: ${MONITOR_QDRANT_COLLECTION:-monitor_active}
       MCP_URL: http://deep-web-mcp:8000
       ORCHESTRATOR_URL: http://langgraph-orchestrator:8100
+      SEARXNG_URL: http://searxng:8080
+      CRAWL4AI_PROXY_URL: http://crawl4ai-proxy:8000
+      OPEN_WEBUI_URL: http://open-webui:8080
+      OPEN_WEBUI_API_KEY: ${OPEN_WEBUI_API_KEY:-}
+      OPEN_WEBUI_PROMPT_MODEL_ID: ${OPEN_WEBUI_PROMPT_MODEL_ID:-qwen35}
+      BROWSERLESS_URL: http://browserless:3000
+      FIRECRAWL_URL: ${FIRECRAWL_URL:-}
+      FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY:-}
+      WEB_TOOLS_TIMEOUT_S: ${WEB_TOOLS_TIMEOUT_S:-90}
+      MONITOR_DB_PATH: /app/data/control-center.db
+      DIAGNOSTIC_RETENTION_DAYS: ${DIAGNOSTIC_RETENTION_DAYS:-30}
+      DIAGNOSTIC_MAX_RUNS: ${DIAGNOSTIC_MAX_RUNS:-500}
+      PROBE_CACHE_TTL_S: ${PROBE_CACHE_TTL_S:-15}
       POSTGRES_OPS_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/ops
       TRANSFORMERS_OFFLINE: "1"
       HF_DATASETS_OFFLINE: "1"
@@ -383,9 +406,11 @@ services:
       qdrant:
         condition: service_healthy
       deep-web-mcp:
-        condition: service_started
+        condition: service_healthy
     ports:
       - 127.0.0.1:19000:9000
+    volumes:
+      - monitor-daemon-data:/app/data
     networks:
       - llm-net
     dns: *airgap-dns
@@ -442,3 +467,7 @@ networks:
 
 volumes:
   postgres-data:
+  open-webui-data:
+    name: open-webui-live-data
+  monitor-daemon-data:
+    name: monitor-daemon-data

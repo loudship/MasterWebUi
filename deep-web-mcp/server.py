@@ -58,20 +58,22 @@ import asyncio
 import json
 import logging
 import os
+import re
+import socket
 import time
 import uuid
+import ipaddress
 from dataclasses import dataclass, field
 from typing import Any, Optional
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel, Field
 
 # Starlette SSE transport (MCP /sse route)
-from mcp.server.sse import SseServerTransport
-
 # SSE event-source for streaming endpoints
 from sse_starlette.sse import EventSourceResponse
 
@@ -90,6 +92,7 @@ logging.basicConfig(
 # ---------------------------------------------------------------------------
 
 SEARXNG_URL:     str = os.getenv("SEARXNG_URL",     "http://searxng:8080")
+ALLOW_PUBLIC_TARGETS: bool = os.getenv("ALLOW_PUBLIC_TARGETS", "false").lower() == "true"
 ALLOWED_TARGET_HOSTS = {
     host.strip().lower()
     for host in os.environ.get("ALLOWED_TARGET_HOSTS", "crawl4ai,searxng,browserless").split(",")
@@ -103,13 +106,29 @@ PAGE_TIMEOUT_MS: int = int(os.getenv("PAGE_TIMEOUT_MS", "45000"))
 _sanitizer = TextSanitizer(max_chars=MAX_CHARS)
 
 
-def _assert_internal_target(url: str) -> None:
-    hostname = (urlparse(url).hostname or "").lower()
-    if hostname not in ALLOWED_TARGET_HOSTS:
+def _assert_allowed_target(url: str) -> None:
+    parsed = urlparse(url)
+    hostname = (parsed.hostname or "").lower()
+    if parsed.scheme not in {"http", "https"} or not hostname:
+        raise ValueError("Target must be a valid http:// or https:// URL.")
+    if hostname in ALLOWED_TARGET_HOSTS:
+        return
+    if hostname.endswith(".onion"):
+        raise ValueError(".onion targets are not supported by this direct-extraction service.")
+    if not ALLOW_PUBLIC_TARGETS:
         raise ValueError(
             f"Target host {hostname!r} is not in the internal allowlist: "
             f"{sorted(ALLOWED_TARGET_HOSTS)}"
         )
+
+    try:
+        addresses = {item[4][0] for item in socket.getaddrinfo(hostname, parsed.port or 443)}
+    except socket.gaierror as exc:
+        raise ValueError(f"Target host {hostname!r} could not be resolved: {exc}") from exc
+    for address in addresses:
+        ip = ipaddress.ip_address(address)
+        if not ip.is_global:
+            raise ValueError(f"Public target {hostname!r} resolved to blocked address {address}.")
 
 
 # ---------------------------------------------------------------------------
@@ -158,7 +177,7 @@ def _error_block(
     SESSION_LOAD_FAILURE    — credential vault unreachable
     CRAWL4AI_ERROR          — unexpected Crawl4AI runtime exception
     """
-    return {
+    result = {
         "status":     "error",
         "task_id":    task_id,
         "url":        url,
@@ -166,6 +185,11 @@ def _error_block(
         "reason":     reason,
         "timestamp":  time.time(),
     }
+    task = _task_registry.get(task_id)
+    if task:
+        task.status = "error"
+        task.result = result
+    return result
 
 
 # ===========================================================================
@@ -250,7 +274,7 @@ async def _crawl4ai_extract(
     """
 
     try:
-        _assert_internal_target(url)
+        _assert_allowed_target(url)
         from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
         from crawl4ai.content_filter_strategy import PruningContentFilter
         from crawl4ai.markdown_generation_strategy import DefaultMarkdownGenerator
@@ -476,14 +500,18 @@ async def _crawl4ai_extract(
     _set_task_progress(task_id, 80, "running")
 
     # ── Step 5: Extract markdown content ──────────────────────────────────
-    # Prefer fit_markdown (pruned) → markdown_v2 → raw_markdown → cleaned_html fallback
-    raw_md: str = (
-        getattr(crawler_result.markdown_v2, "fit_markdown", None)
-        or getattr(crawler_result.markdown_v2, "raw_markdown", None)
-        or getattr(crawler_result, "markdown",  None)
-        or getattr(crawler_result, "cleaned_html", None)
-        or ""
-    )
+    # Crawl4AI 0.6 exposes a MarkdownGenerationResult through `markdown`.
+    markdown_result = getattr(crawler_result, "markdown", None)
+    if isinstance(markdown_result, str):
+        raw_md = markdown_result
+    else:
+        raw_md = (
+            getattr(markdown_result, "fit_markdown", None)
+            or getattr(markdown_result, "raw_markdown", None)
+            or getattr(markdown_result, "markdown_with_citations", None)
+            or getattr(crawler_result, "cleaned_html", None)
+            or ""
+        )
 
     if not raw_md.strip():
         logger.warning(
@@ -513,6 +541,7 @@ async def _crawl4ai_extract(
         "http_status": getattr(crawler_result, "status_code", None),
         "links_found": len(getattr(crawler_result, "links", {}).get("internal", [])),
         "truncated":   len(raw_md) > MAX_CHARS,
+        "route":       "direct",
         "timestamp":   time.time(),
     }
 
@@ -532,10 +561,9 @@ async def _crawl4ai_extract(
 
 @mcp.tool()
 async def fetch_deep_web_data(
-    target_database:  str,
-    thread_id:        str  = "default",
+    url:              str,
     session_required: bool = False,
-    js_eval:          str  = None,
+    js_script:        str  = None,
 ) -> str:
     """
     Extract and sanitize content from an allowed internal service.
@@ -550,18 +578,14 @@ async def fetch_deep_web_data(
 
     Parameters
     ----------
-    target_database : str
-        Valid URL whose host is present in ALLOWED_TARGET_HOSTS.
-
-    thread_id : str
-        Active session thread identifier used to look up authentication
-        tokens from the PostgreSQL CredentialVault.
+    url : str
+        Public, onion, or explicitly allowed internal URL to extract.
 
     session_required : bool
         If True, pause the execution loop and query the CredentialVault for
         stored JWTs and persistent cookies before any browser navigation.
 
-    js_eval : str | None
+    js_script : str | None
         Optional JavaScript expression evaluated on the page after load.
         Use to trigger lazy-rendered SPA content or bypass soft paywalls.
 
@@ -577,17 +601,17 @@ async def fetch_deep_web_data(
     task_id = str(uuid.uuid4())
     _task_registry[task_id] = ExtractionTask(
         task_id=task_id,
-        url=target_database,
+        url=url,
         progress=0,
         status="running",
     )
 
     # ── Run extraction ─────────────────────────────────────────────────────
     result = await _crawl4ai_extract(
-        url=target_database,
-        thread_id=thread_id,
+        url=url,
+        thread_id=(urlparse(url).hostname or "default"),
         session_required=session_required,
-        js_eval=js_eval,
+        js_eval=js_script,
         task_id=task_id,
     )
 
@@ -621,58 +645,101 @@ async def search_deep_web_database(
     """
     import httpx
 
-    params = {"q": search_query, "engines": target_database, "format": "json"}
-    async with httpx.AsyncClient() as client:
+    engine = target_database.strip().lower() or "bing"
+    if not re.fullmatch(r"[a-z0-9 _,-]{1,100}", engine):
+        return json.dumps({"status": "error", "message": "Invalid SearXNG engine identifier."})
+    query = search_query.strip()
+    if not query:
+        return json.dumps({"status": "error", "message": "search_query must not be empty."})
+
+    params = {"q": query, "engines": engine, "format": "json", "safesearch": "1"}
+    headers = {"X-Forwarded-For": "127.0.0.1", "X-Real-IP": "127.0.0.1"}
+    async with httpx.AsyncClient(headers=headers) as client:
         try:
             resp = await client.get(
                 f"{SEARXNG_URL}/search", params=params, timeout=30.0
             )
             resp.raise_for_status()
             data = resp.json()
-            return json.dumps({"status": "success", "results": data.get("results", [])})
+            results = [
+                {
+                    "title": item.get("title") or item.get("url") or "Untitled result",
+                    "url": item.get("url", ""),
+                    "content": item.get("content", ""),
+                    "engine": item.get("engine") or engine,
+                    "score": item.get("score"),
+                    "published_date": item.get("publishedDate"),
+                }
+                for item in data.get("results", [])[:10]
+            ]
+            query_terms = set(re.findall(r"[a-z0-9]+", query.lower()))
+
+            def relevance(item: dict) -> float:
+                haystack = f"{item['title']} {item['url']} {item['content']}".lower()
+                score = float(item.get("score") or 0)
+                score += sum(term in haystack for term in query_terms)
+                if {"github", "repository", "repo"} & query_terms and "github.com/" in item["url"].lower():
+                    score += 5
+                return score
+
+            results.sort(key=relevance, reverse=True)
+            results = results[:5]
+            return json.dumps({
+                "status": "success",
+                "source": "live",
+                "query": query,
+                "engine": engine,
+                "route": "searxng_internal",
+                "result_count": len(results),
+                "unresponsive_engines": data.get("unresponsive_engines", []),
+                "best_match": results[0] if results else None,
+                "results": results,
+            })
         except Exception as exc:
-            return json.dumps({"status": "error", "message": str(exc)})
+            return json.dumps({
+                "status": "error",
+                "query": query,
+                "engine": engine,
+                "message": str(exc),
+            })
 
 
 # ===========================================================================
 # FastAPI application  (MCP SSE transport + streaming endpoints)
 # ===========================================================================
 
-app: FastAPI = mcp.sse_app()
+app = FastAPI(
+    title="Deep Web MCP",
+    description="Search and extraction bridge for the local web-tool stack.",
+    version="3.1.0",
+)
 
-# ---------------------------------------------------------------------------
-# Starlette SseServerTransport — MCP /sse discovery route
-#
-# This mounts the canonical MCP SSE wire protocol at /sse so MCP-compatible
-# clients (Open-WebUI, Claude Desktop, Cursor) can discover and invoke tools.
-# The endpoint supports real-time event streaming of tool execution state.
-# ---------------------------------------------------------------------------
+@app.get("/health")
+async def health():
+    """Return a low-noise readiness contract for operators and dashboards."""
+    return {
+        "status": "ok",
+        "service": "deep-web-mcp",
+        "public_targets_enabled": ALLOW_PUBLIC_TARGETS,
+        "allowed_internal_hosts": sorted(ALLOWED_TARGET_HOSTS),
+        "tools": ["fetch_deep_web_data", "search_deep_web_database"],
+    }
 
-sse_transport = SseServerTransport("/sse")
+
+class SearchRequest(BaseModel):
+    target_database: str = Field("bing", description="SearXNG engine identifier.")
+    search_query: str = Field(..., min_length=1, max_length=500)
+    session_required: bool = False
 
 
-@app.get("/sse")
-async def mcp_sse_endpoint(request: Request):
-    """
-    MCP SSE transport route.
-
-    Streams tool discovery metadata and execution state events to any
-    MCP-compatible client connected to this endpoint.  Events include:
-      - tools/list response (on connect)
-      - tool call progress updates
-      - tool call result payloads
-
-    Compatible with Open-WebUI's MCP client, Claude Desktop, and the
-    official MCP Python SDK test client.
-    """
-    async with sse_transport.connect_sse(
-        request.scope, request.receive, request._send
-    ) as streams:
-        await mcp._mcp_server.run(
-            streams[0],
-            streams[1],
-            mcp._mcp_server.create_initialization_options(),
-        )
+@app.post("/search")
+async def search(req: SearchRequest):
+    """REST bridge for the normalized search contract exposed through MCP."""
+    return json.loads(await search_deep_web_database(
+        target_database=req.target_database,
+        search_query=req.search_query,
+        session_required=req.session_required,
+    ))
 
 
 # ---------------------------------------------------------------------------
@@ -819,6 +886,7 @@ async def extract_status(task_id: str):
         "url":        task.url,
         "progress":   task.progress,
         "status":     task.status,
+        "result":     task.result,
         "started_at": task.started_at,
     }
 
@@ -855,6 +923,10 @@ async def store_credentials(req: CredentialStoreRequest):
     except Exception as exc:
         logger.exception("[CREDENTIALS] Store failed for thread_id=%r.", req.thread_id)
         return {"status": "error", "reason": str(exc)}
+
+
+# Mount MCP transport last so explicit REST routes keep precedence.
+app.mount("/", mcp.sse_app())
 
 
 # ===========================================================================
