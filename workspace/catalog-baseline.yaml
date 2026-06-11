@@ -1,0 +1,61 @@
+{
+  "models": {
+    "qwen35": {
+      "name": "Preset - General - Qwen3.5",
+      "tool_ids": ["inline_visualizer"],
+      "skill_ids": ["visualize"],
+      "default_features": ["web_search", "code_interpreter"],
+      "tags": ["general"],
+      "capabilities": ["file_context", "vision", "file_upload", "web_search", "code_interpreter", "citations", "status_updates", "usage", "builtin_tools"],
+      "builtin_tools": ["web_search", "code_interpreter"]
+    },
+    "qwen257b": {
+      "name": "Preset - Vision - Qwen2.5 VL 7B",
+      "tool_ids": [],
+      "skill_ids": [],
+      "default_features": ["web_search"],
+      "tags": ["vision"],
+      "capabilities": ["file_context", "vision", "file_upload", "web_search", "citations", "status_updates", "builtin_tools"],
+      "builtin_tools": ["web_search"]
+    },
+    "moyclark": {
+      "name": "Preset - Roleplay - Galadriel",
+      "tool_ids": [],
+      "skill_ids": [],
+      "default_features": [],
+      "tags": ["roleplay"],
+      "knowledge_ids": ["51e77006-e512-4bb1-9d64-0cdb87c0526d"],
+      "knowledge_context": "full",
+      "remove_params": ["system", "function_calling"],
+      "capabilities": ["file_context", "citations", "status_updates"]
+    },
+    "-data-analyst--developer": {
+      "name": "Preset - Data Analysis - Analyst and Developer",
+      "tool_ids": ["inline_visualizer"],
+      "skill_ids": ["visualize", "reproducible-data-analysis"],
+      "default_features": ["code_interpreter"],
+      "tags": ["data-analysis"],
+      "capabilities": ["file_context", "file_upload", "code_interpreter", "citations", "status_updates", "usage", "builtin_tools"],
+      "builtin_tools": ["code_interpreter"]
+    }
+  },
+  "tools": {
+    "deep_web_ecosystem_tools": {"name": "Tool - Deep Web MCP - Search and Extract", "source": "workspace/catalog-tools/deep_web_readonly.py"},
+    "deep_web_advanced_tools": {"name": "Tool - Deep Web MCP - Advanced Session and JavaScript", "source": "workspace/catalog-tools/deep_web_advanced.py"},
+    "run_code_py": {"name": "Tool - Code Sandbox - Python and Bash", "patch_sandbox_defaults": true},
+    "mcp_app_bridge": {"name": "Tool - MCP Apps - Rich UI Bridge"},
+    "swarm_controls": {"name": "Tool - Orchestrator - Read-Only Status", "source": "workspace/catalog-tools/orchestrator_status.py"},
+    "inline_visualizer": {"name": "Tool - Visualization - Inline HTML and SVG", "patch_local_only": true},
+    "youtube_transcript_provider": {"name": "Tool - Media - YouTube Transcript via Tor"},
+    "calendar_ecosystem_tools": {"name": "Tool - Calendar - Read-Only Fallback", "remove_methods": ["create_event"]},
+    "home_assit": {"name": "Tool - Home Assistant - Read-Only Fallback", "remove_methods": ["call_service"]}
+  },
+  "archive_tools": [],
+  "archive_functions": ["comfy_mcp_pipeline", "langfuse_filter"],
+  "knowledge": {
+    "id": "51e77006-e512-4bb1-9d64-0cdb87c0526d",
+    "name": "Knowledge - Roleplay - Galadriel",
+    "description": "Roleplay canon and response guidance for the Galadriel preset.",
+    "document_name": "galadriel-roleplay-profile.md"
+  }
+}

@@ -9,6 +9,6 @@ docs
 langfuse-skills
 logs
 node_modules
-open-webui-0.9.6
 package-lock.json
+!open-webui-0.9.6/package-lock.json
 tmp_retrieval
