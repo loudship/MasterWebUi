@@ -422,6 +422,48 @@ services:
     dns: *airgap-dns
     restart: unless-stopped
 
+  config-drift-monitor:
+    profiles: [offline-tools]
+    build:
+      context: .
+      dockerfile: services/config-drift-monitor/Dockerfile
+    image: config-drift-monitor:local
+    pull_policy: never
+    container_name: config-drift-monitor
+    environment:
+      OPEN_WEBUI_URL: http://open-webui:8080
+      OPEN_WEBUI_API_KEY: ${OPEN_WEBUI_API_KEY:-}
+      CONFIG_DRIFT_BASELINE_PATH: /app/config/config-drift-baseline.yaml
+      CONFIG_DRIFT_ADMIN_INTERVAL_S: ${CONFIG_DRIFT_ADMIN_INTERVAL_S:-30}
+      CONFIG_DRIFT_WORKSPACE_INTERVAL_S: ${CONFIG_DRIFT_WORKSPACE_INTERVAL_S:-30}
+      CONFIG_DRIFT_USER_INTERVAL_S: ${CONFIG_DRIFT_USER_INTERVAL_S:-60}
+      CONFIG_DRIFT_CHAT_INTERVAL_S: ${CONFIG_DRIFT_CHAT_INTERVAL_S:-60}
+      CONFIG_DRIFT_RECENT_CHAT_HOURS: ${CONFIG_DRIFT_RECENT_CHAT_HOURS:-24}
+      CONFIG_DRIFT_CHATS_PER_USER: ${CONFIG_DRIFT_CHATS_PER_USER:-20}
+      CONFIG_DRIFT_MAX_CHATS: ${CONFIG_DRIFT_MAX_CHATS:-100}
+      CONFIG_DRIFT_TIMEOUT_S: ${CONFIG_DRIFT_TIMEOUT_S:-15}
+    depends_on:
+      open-webui:
+        condition: service_healthy
+    ports:
+      - 127.0.0.1:19100:9100
+    volumes:
+      - ./config/config-drift-baseline.yaml:/app/config/config-drift-baseline.yaml:ro
+    networks:
+      - llm-net
+    dns: *airgap-dns
+    mem_limit: 512m
+    cpus: "1.0"
+    pids_limit: 64
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
   state-migration:
     profiles: [migration]
     build:

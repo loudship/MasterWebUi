@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Configuration Drift Monitor</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' fill='%23000306'/%3E%3Cpath d='M32 8 56 52H8Z' fill='none' stroke='%2300e5ff' stroke-width='5'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+<aside>
+  <div class="brand"><span>Δ</span><div><strong>CONFIG DRIFT</strong><small>Read-only telemetry</small></div></div>
+  <nav id="nav" aria-label="Primary navigation">
+    <button class="active" data-view="overview" data-tip="Scan overall alignment, plane freshness, and high-priority discrepancies.">Alignment Overview</button>
+    <button data-view="matrix" data-tip="Compare expected and observed values across the configuration hierarchy.">Differential Matrix</button>
+    <button data-view="planes" data-tip="Inspect sanitized API coverage and current state for each observable plane.">Plane Inspector</button>
+    <button data-view="baseline" data-tip="Review the version-controlled expected-state contract and provenance.">Baseline Contract</button>
+    <button data-view="export" data-tip="Trigger a read-only refresh and download the current snapshot.">Export & Diagnostics</button>
+  </nav>
+  <div class="side-foot"><i id="event-dot"></i><span id="event-label">Connecting telemetry</span></div>
+</aside>
+<main>
+  <header>
+    <div><p class="eyebrow">OPEN WEBUI CONFIGURATION ALIGNMENT</p><h1 id="page-title">Alignment Overview</h1><p id="page-desc">Live cross-check of baseline, admin, workspace, user, and persisted chat state.</p></div>
+    <div class="header-actions"><span id="last-check">Awaiting first snapshot</span><button id="refresh" data-tip="Immediately rerun every read-only API poll. Limited to once every five seconds.">Refresh all planes</button></div>
+  </header>
+
+  <section id="overview" class="view active">
+    <div class="hero"><div><p class="eyebrow">CURRENT ALIGNMENT</p><h2 id="posture">Building state map...</h2><p>No database reads. No reconciliation. Every result comes from authenticated REST telemetry.</p></div><span id="posture-badge" class="status">waiting</span></div>
+    <div id="metrics" class="metrics"></div>
+    <h3>Configuration planes</h3><div id="plane-cards" class="cards"></div>
+    <h3>Priority discrepancies</h3><div id="priority" class="stack"></div>
+  </section>
+
+  <section id="matrix" class="view">
+    <div class="intro"><h2>Differential Matrix</h2><p>Expected and observed values are sanitized before they enter this interface.</p></div>
+    <div class="filters">
+      <label class="grow">Search<input id="search" placeholder="Path, label, entity, or recommendation"></label>
+      <label>Plane<select id="plane-filter"><option value="">All planes</option><option>admin</option><option>workspace</option><option>user</option><option>chat</option></select></label>
+      <label>Status<select id="status-filter"><option value="">All statuses</option><option>drift</option><option>override</option><option>unavailable</option><option>unobservable</option><option>aligned</option></select></label>
+      <label>Severity<select id="severity-filter"><option value="">All severities</option><option>critical</option><option>warning</option><option>info</option></select></label>
+      <label class="toggle"><input id="issues-only" type="checkbox"> Issues only</label>
+    </div>
+    <div class="table-wrap"><table><thead><tr><th>Status</th><th>Setting</th><th>Planes</th><th>Entity</th><th>Expected</th><th>Observed</th><th>Action</th></tr></thead><tbody id="matrix-body"></tbody></table></div>
+    <div id="matrix-empty" class="empty hidden">No differential records match these filters.</div>
+  </section>
+
+  <section id="planes" class="view">
+    <div class="intro"><h2>Plane Inspector</h2><p>Sanitized API state and coverage. User email addresses, chat titles, messages, histories, and files are never retained.</p></div>
+    <div id="plane-inspector" class="stack"></div>
+  </section>
+
+  <section id="baseline" class="view">
+    <div class="intro"><h2>Baseline Contract</h2><p>Hardened Compose expectations take precedence over non-conflicting legacy master settings.</p></div>
+    <div id="baseline-summary" class="cards"></div>
+    <pre id="baseline-json">Loading baseline...</pre>
+  </section>
+
+  <section id="export" class="view">
+    <div class="hero"><div><p class="eyebrow">READ-ONLY DIAGNOSTICS</p><h2>Current State Export</h2><p>Refresh telemetry or download the current sanitized in-memory snapshot. Nothing is written back to Open WebUI.</p></div><button id="diagnostic-refresh">Run read-only refresh</button></div>
+    <div class="export-grid"><a href="/api/v1/export?format=markdown">Download Markdown</a><a href="/api/v1/export?format=json">Download JSON</a><button id="copy-snapshot" class="secondary">Copy snapshot JSON</button></div>
+    <pre id="diagnostic-json">No snapshot loaded.</pre>
+  </section>
+</main>
+<div id="tooltip" role="tooltip"></div><div id="toast" role="status" aria-live="polite"></div>
+<script src="/assets/app.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,123 @@
+schema_version: 1
+metadata:
+  name: Hardened Open WebUI Configuration Baseline
+  description: Read-only expected-state contract. Hardened Compose wins over legacy master configuration.
+  precedence: hardened-compose-over-legacy-master-config
+  lower_plane_override_policy: warning
+rules:
+  - id: admin.openai.base_urls
+    logical_path: admin.connections.openai_base_urls
+    label: OpenAI-compatible traffic routes through Pipelines
+    domain: connections
+    provenance: hardened docker-compose.yml
+    severity: critical
+    enforced: true
+    mode: unordered_set
+    expected: ["http://pipelines:9099/v1"]
+    sources:
+      admin: {endpoint: openai, pointer: /OPENAI_API_BASE_URLS}
+    recommendation: Route Open WebUI through the canonical Pipelines endpoint.
+  - id: admin.connections.direct
+    logical_path: admin.connections.enable_direct_connections
+    label: Direct browser model connections are disabled
+    domain: connections
+    provenance: hardened docker-compose.yml
+    severity: critical
+    enforced: true
+    mode: exact
+    expected: false
+    sources:
+      admin: {endpoint: connections, pointer: /ENABLE_DIRECT_CONNECTIONS}
+  - id: admin.web_search.enabled
+    logical_path: admin.retrieval.web.enable_web_search
+    label: Built-in web search follows hardened manifest policy
+    domain: retrieval
+    provenance: hardened docker-compose.yml
+    severity: critical
+    enforced: true
+    mode: exact
+    expected: false
+    sources:
+      admin: {endpoint: retrieval, pointer: /web/ENABLE_WEB_SEARCH}
+  - id: admin.retrieval.chunk_size
+    logical_path: admin.retrieval.chunk_size
+    label: Retrieval chunk size
+    domain: retrieval
+    provenance: legacy master config, non-conflicting
+    severity: warning
+    mode: exact
+    expected: 1000
+    sources:
+      admin: {endpoint: retrieval, pointer: /CHUNK_SIZE}
+  - id: admin.retrieval.chunk_overlap
+    logical_path: admin.retrieval.chunk_overlap
+    label: Retrieval chunk overlap
+    domain: retrieval
+    provenance: legacy master config, non-conflicting
+    severity: warning
+    mode: exact
+    expected: 100
+    sources:
+      admin: {endpoint: retrieval, pointer: /CHUNK_OVERLAP}
+  - id: admin.models.default_params
+    logical_path: admin.models.default_params
+    label: Global default model parameters
+    domain: models
+    provenance: legacy master config, non-conflicting
+    severity: warning
+    mode: subset
+    expected:
+      options: {num_ctx: 16000}
+    sources:
+      admin: {endpoint: models_config, pointer: /DEFAULT_MODEL_PARAMS}
+  - id: workspace.models.context
+    logical_path: workspace.models.params.num_ctx
+    label: Workspace model context length
+    domain: models
+    provenance: legacy master config, non-conflicting
+    severity: warning
+    mode: exact
+    expected: 16000
+    sources:
+      workspace: {collection: models, selector: "*", pointer: /params/num_ctx}
+  - id: admin.audio.tts_engine
+    logical_path: admin.audio.tts.engine
+    label: TTS engine
+    domain: audio
+    provenance: legacy master config, non-conflicting
+    severity: warning
+    mode: exact
+    expected: openai
+    sources:
+      admin: {endpoint: audio, pointer: /tts/ENGINE}
+  - id: admin.audio.tts_model
+    logical_path: admin.audio.tts.model
+    label: TTS model
+    domain: audio
+    provenance: legacy master config, non-conflicting
+    severity: warning
+    mode: exact
+    expected: kokoro
+    sources:
+      admin: {endpoint: audio, pointer: /tts/MODEL}
+  - id: admin.permissions.chat_controls
+    logical_path: admin.permissions.chat.controls
+    label: Chat controls permission
+    domain: permissions
+    provenance: Open WebUI operational default
+    severity: info
+    mode: exact
+    expected: true
+    sources:
+      user: {endpoint: default_permissions, pointer: /chat/controls}
+  - id: admin.auth.endpoint_support
+    logical_path: admin.auth.endpoint_support_enabled
+    label: API key support remains enabled
+    domain: authentication
+    provenance: hardened docker-compose.yml
+    severity: critical
+    enforced: true
+    mode: exact
+    expected: true
+    sources:
+      admin: {endpoint: auth_admin, pointer: /ENABLE_API_KEYS}
