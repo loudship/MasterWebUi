@@ -10,11 +10,14 @@ def test_deep_web_mcp_preserves_open_webui_bridge_contract():
     assert "url:              str" in SERVER
     assert "js_script:        str  = None" in SERVER
     assert "async def search_deep_web_database(" in SERVER
+    assert "async def discover_web_layouts(" in SERVER
 
 
 def test_deep_web_mcp_exposes_real_health_search_and_extract_routes():
     assert '@app.get("/health")' in SERVER
+    assert '@app.get("/health/validation")' in SERVER
     assert '@app.post("/search")' in SERVER
+    assert '@app.post("/discover")' in SERVER
     assert '@app.post("/extract/stream")' in SERVER
     assert 'app.mount("/", mcp.sse_app())' in SERVER
     assert 'MCP_URL}/health' in (ROOT / "monitor_daemon.py").read_text(encoding="utf-8")
@@ -34,3 +37,8 @@ def test_current_crawl4ai_markdown_contract_is_used():
 def test_search_contract_is_compact_and_exposes_ranked_best_match():
     assert '"best_match": results[0] if results else None' in SERVER
     assert "results = results[:5]" in SERVER
+
+
+def test_discovery_contract_requires_json_only_items():
+    assert "discover_web_layouts" in SERVER
+    assert "@app.post(\"/discover\")" in SERVER

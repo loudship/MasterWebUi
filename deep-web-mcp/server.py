@@ -7,6 +7,8 @@ Architecture
   FastMCP  ──SSE──►  /sse   (MCP tool discovery + invocation)
   FastAPI  ──POST──► /extract/stream  (raw SSE progress stream)
   FastAPI  ──GET───► /extract/status/{task_id}  (polling fallback)
+  FastAPI  ──POST──► /discover        (JSON-only discovery contract)
+  FastAPI  ──GET───► /health/validation  (supporting endpoint probes)
   FastAPI  ──POST──► /credentials/store
 
 Core tool: fetch_deep_web_data
@@ -64,7 +66,7 @@ import time
 import uuid
 import ipaddress
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Optional, Literal
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, Request
@@ -80,6 +82,13 @@ from sse_starlette.sse import EventSourceResponse
 # Local modules
 from database import get_credentials, save_credentials
 from sanitizer import TextSanitizer, MAX_CHARS
+from web_discovery import (
+    DEFAULT_MAX_CHARS as DISCOVERY_DEFAULT_MAX_CHARS,
+    DEFAULT_MAX_RESULTS as DISCOVERY_DEFAULT_MAX_RESULTS,
+    DEFAULT_MAX_TOKENS as DISCOVERY_DEFAULT_MAX_TOKENS,
+    discover_web_layouts as run_web_discovery,
+    validate_supporting_endpoints as validate_web_dependencies,
+)
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(
@@ -246,6 +255,34 @@ class FetchDeepWebDataInput(BaseModel):
     session_required: bool           = Field(False, description="Pause loop and load session credentials from vault.")
     js_eval:          Optional[str]  = Field(None, description="Optional JS to evaluate post-load.")
     search_query:     Optional[str]  = Field(None, description="Optional SearXNG search query.")
+
+
+class DomainFilterInput(BaseModel):
+    domain: str = Field(..., min_length=1, description="Domain to include or exclude.")
+    mode: Literal["include", "exclude"] = Field("include")
+
+
+class WebDiscoveryInput(BaseModel):
+    query: str = Field(..., min_length=1, description="Query string to search and extract.")
+    domain_filters: list[DomainFilterInput] = Field(default_factory=list)
+    max_tokens: int = Field(
+        default=DISCOVERY_DEFAULT_MAX_TOKENS,
+        ge=32,
+        le=20_000,
+        description="Strict output token budget (conservatively enforced).",
+    )
+    max_chars: int = Field(
+        default=DISCOVERY_DEFAULT_MAX_CHARS,
+        ge=512,
+        le=100_000,
+        description="Hard character ceiling for compiled layout text.",
+    )
+    max_results: int = Field(
+        default=DISCOVERY_DEFAULT_MAX_RESULTS,
+        ge=1,
+        le=10,
+        description="Maximum number of discovered pages to return.",
+    )
 
 
 # ===========================================================================
@@ -704,6 +741,40 @@ async def search_deep_web_database(
             })
 
 
+# =========================================================================== 
+# MCP TOOL 3 — discover_web_layouts
+# ===========================================================================
+
+@mcp.tool()
+async def discover_web_layouts(
+    query: str,
+    domain_filters: list[dict[str, Any]] | None = None,
+    max_tokens: int = DISCOVERY_DEFAULT_MAX_TOKENS,
+    max_chars: int = DISCOVERY_DEFAULT_MAX_CHARS,
+    max_results: int = DISCOVERY_DEFAULT_MAX_RESULTS,
+) -> str:
+    """Return a strict JSON array of discovered URI, heading, and layout items."""
+    try:
+        result = await run_web_discovery(
+            query,
+            domain_filters=domain_filters or [],
+            max_tokens=max_tokens,
+            max_chars=max_chars,
+            max_results=max_results,
+        )
+        return json.dumps(result, ensure_ascii=False)
+    except Exception as exc:
+        logger.exception("[DISCOVERY] MCP tool failed.")
+        return json.dumps(
+            {
+                "status": "error",
+                "error_code": "DISCOVERY_FAILED",
+                "reason": f"{type(exc).__name__}: {exc}",
+            },
+            ensure_ascii=False,
+        )
+
+
 # ===========================================================================
 # FastAPI application  (MCP SSE transport + streaming endpoints)
 # ===========================================================================
@@ -722,8 +793,26 @@ async def health():
         "service": "deep-web-mcp",
         "public_targets_enabled": ALLOW_PUBLIC_TARGETS,
         "allowed_internal_hosts": sorted(ALLOWED_TARGET_HOSTS),
-        "tools": ["fetch_deep_web_data", "search_deep_web_database"],
+        "tools": ["fetch_deep_web_data", "search_deep_web_database", "discover_web_layouts"],
     }
+
+
+@app.get("/health/validation")
+async def health_validation():
+    """Probe supporting search and proxy endpoints without mutating state."""
+    try:
+        services = await validate_web_dependencies()
+        return {
+            "status": "ok",
+            "services": services,
+        }
+    except Exception as exc:
+        logger.exception("[HEALTH] validation probe failed.")
+        return {
+            "status": "error",
+            "error_code": "HEALTH_VALIDATION_FAILED",
+            "reason": f"{type(exc).__name__}: {exc}",
+        }
 
 
 class SearchRequest(BaseModel):
@@ -740,6 +829,32 @@ async def search(req: SearchRequest):
         search_query=req.search_query,
         session_required=req.session_required,
     ))
+
+
+@app.post("/discover")
+async def discover(req: WebDiscoveryInput):
+    """Return JSON-only discovery results with no prose wrapper."""
+    try:
+        result = await run_web_discovery(
+            req.query,
+            domain_filters=[filter_.model_dump() for filter_ in req.domain_filters],
+            max_tokens=req.max_tokens,
+            max_chars=req.max_chars,
+            max_results=req.max_results,
+        )
+        if isinstance(result, dict) and result.get("status") == "error":
+            return JSONResponse(status_code=422, content=result)
+        return result
+    except Exception as exc:
+        logger.exception("[DISCOVERY] Unhandled failure.")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "error_code": "DISCOVERY_FAILED",
+                "reason": f"{type(exc).__name__}: {exc}",
+            },
+        )
 
 
 # ---------------------------------------------------------------------------

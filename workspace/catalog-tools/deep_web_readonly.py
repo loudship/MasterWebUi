@@ -56,3 +56,31 @@ class Tools:
                         },
                     )
                 )
+
+    async def discover_layouts(
+        self,
+        query: str,
+        domain_filters: list[dict] | None = None,
+        max_tokens: int = 1200,
+        max_chars: int = 20_000,
+        max_results: int = 5,
+    ) -> str:
+        """Discover pages and return strict JSON items with headings and layouts."""
+        from mcp.client.session import ClientSession
+        from mcp.client.sse import sse_client
+
+        async with sse_client(self.valves.server_url) as streams:
+            async with ClientSession(*streams) as session:
+                await session.initialize()
+                return _text(
+                    await session.call_tool(
+                        "discover_web_layouts",
+                        arguments={
+                            "query": query,
+                            "domain_filters": domain_filters or [],
+                            "max_tokens": max_tokens,
+                            "max_chars": max_chars,
+                            "max_results": max_results,
+                        },
+                    )
+                )
