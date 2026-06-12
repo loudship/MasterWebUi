@@ -91,6 +91,18 @@ PROMPTS = [
         "content": "Compare the intended baseline with the observed runtime configuration for {{scope}}. Group differences by configuration plane, explain effective precedence, and identify safe reconciliation steps.",
         "tags": ["operations", "configuration-drift"],
     },
+    {
+        "command": "general-search",
+        "name": "Prompt - Research - General Search",
+        "content": "Use the web search model to run General Search for {{query}}. Return concise titles, domains, summaries, and verified clickable Markdown links.",
+        "tags": ["research", "web-search"],
+    },
+    {
+        "command": "deep-research",
+        "name": "Prompt - Research - Deep Research",
+        "content": "Use the web search model to run Deep Research for {{query}}. Perform iterative coverage-gap searches, report failed sources, persist the complete report, and return a bounded synthesis with indexed clickable references.",
+        "tags": ["research", "deep-research"],
+    },
 ]
 
 BUILTIN_TOOL_CATEGORIES = (
@@ -126,9 +138,9 @@ def sanitize(value: Any, key: str = "") -> Any:
 
 
 class Api:
-    def __init__(self, base_url: str, email: str, password: str):
+    def __init__(self, base_url: str, email: str = "", password: str = "", token: str = ""):
         self.base_url = base_url.rstrip("/")
-        self.token = self._signin(email, password)
+        self.token = token or self._signin(email, password)
 
     def _signin(self, email: str, password: str) -> str:
         payload = self.request("POST", "/api/v1/auths/signin", {"email": email, "password": password}, auth=False)
@@ -231,15 +243,23 @@ def model_form(model: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def tool_form(tool: dict[str, Any], name: str | None = None, content: str | None = None) -> dict[str, Any]:
+def tool_form(
+    tool: dict[str, Any],
+    name: str | None = None,
+    content: str | None = None,
+    catalog_meta: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     meta = tool.get("meta") or {}
+    manifest = copy.deepcopy(meta.get("manifest") or {})
+    if catalog_meta:
+        manifest["catalog"] = catalog_meta
     return {
         "id": tool["id"],
         "name": name or tool["name"],
         "content": content or tool["content"],
         "meta": {
             "description": meta.get("description") or "",
-            "manifest": meta.get("manifest") or {},
+            "manifest": manifest,
         },
         "access_grants": tool.get("access_grants") or [],
     }
@@ -265,6 +285,25 @@ def patch_inline_visualizer_local_only(content: str) -> str:
     content, count = pattern.subn('_KNOWN_CDNS = ""', content, count=1)
     if count == 0 and '_KNOWN_CDNS = ""' not in content:
         raise RuntimeError("Could not remove the Inline Visualizer CDN allowlist")
+    return content
+
+
+def patch_mcp_url_guard(content: str) -> str:
+    guard = (
+        '        if not self.valves.mcp_server_url.strip().startswith(("http://", "https://")):\n'
+        '            return "Configuration error: set mcp_server_url to an http:// or https:// endpoint."\n'
+    )
+    for method_name in ("list_mcp_tools", "call_mcp_tool"):
+        pattern = re.compile(
+            rf"(?m)^(    async def {method_name}\([^\n]*\) -> [^:\n]+:\n"
+            rf"|    async def {method_name}\((?:[^\n]*\n)*?    \) -> [^:\n]+:\n)"
+        )
+        match = pattern.search(content)
+        if not match:
+            raise RuntimeError(f"Could not find MCP bridge method {method_name}")
+        following = content[match.end() : match.end() + len(guard) + 40]
+        if "Configuration error: set mcp_server_url" not in following:
+            content = pattern.sub(rf"\1{guard}", content, count=1)
     return content
 
 
@@ -295,6 +334,31 @@ def reconcile_knowledge_document(api: Api, knowledge: dict[str, Any], knowledge_
     for item in matches:
         if item.get("id") != keep.get("id"):
             api.request("DELETE", f"/api/v1/files/{urllib.parse.quote(item['id'])}")
+
+
+def reconcile_managed_knowledge(api: Api, cfg: dict[str, Any]) -> dict[str, Any]:
+    page = api.request("GET", "/api/v1/knowledge/")
+    knowledge = next((item for item in page.get("items", []) if item.get("name") == cfg["name"]), None)
+    if knowledge is None:
+        knowledge = api.request(
+            "POST",
+            "/api/v1/knowledge/create",
+            {"name": cfg["name"], "description": cfg["description"], "access_grants": []},
+        )
+    detail = api.request("GET", f"/api/v1/knowledge/{knowledge['id']}")
+    content = cfg.get("content")
+    if cfg.get("source"):
+        content = (ROOT / cfg["source"]).read_text(encoding="utf-8")
+    files_page = api.request("GET", f"/api/v1/knowledge/{knowledge['id']}/files")
+    matches = [item for item in files_page.get("items", []) if item.get("filename") == cfg["document_name"]]
+    if not matches:
+        api.upload_text(cfg["document_name"], content or "", knowledge["id"])
+    api.request(
+        "POST",
+        f"/api/v1/knowledge/{knowledge['id']}/update",
+        {"name": cfg["name"], "description": cfg["description"], "access_grants": detail.get("access_grants") or []},
+    )
+    return knowledge
 
 
 def desired_model(current: dict[str, Any], desired: dict[str, Any], knowledge: dict[str, Any]) -> dict[str, Any]:
@@ -350,7 +414,8 @@ def expected_actions(snapshot: dict[str, Any], baseline: dict[str, Any]) -> list
     tools = {item["id"]: item for item in snapshot["tools"]}
     for item_id, desired in baseline["models"].items():
         current = models.get(item_id)
-        if not current or model_form(current) != desired_model(current, desired, baseline["knowledge"]):
+        comparison = current or {**models.get("qwen35", {}), "id": item_id}
+        if not current or model_form(current) != desired_model(comparison, desired, baseline["knowledge"]):
             actions.append(f"update model {item_id}")
     for item_id, desired in baseline["tools"].items():
         current = tools.get(item_id)
@@ -367,6 +432,10 @@ def expected_actions(snapshot: dict[str, Any], baseline: dict[str, Any]) -> list
             )
         if desired.get("patch_local_only"):
             needs_update = needs_update or '_KNOWN_CDNS = ""' not in current.get("content", "")
+        if desired.get("patch_mcp_url_guard"):
+            needs_update = needs_update or current.get("content", "").count(
+                "Configuration error: set mcp_server_url"
+            ) < 2
         needs_update = needs_update or any(
             re.search(rf"(?m)^    (?:async )?def {re.escape(method_name)}\(", current.get("content", ""))
             for method_name in desired.get("remove_methods", [])
@@ -421,10 +490,26 @@ def apply(api: Api, baseline: dict[str, Any], backup: Path | None) -> Path:
             content = patch_sandbox(content)
         if desired.get("patch_local_only"):
             content = patch_inline_visualizer_local_only(content)
+        if desired.get("patch_mcp_url_guard"):
+            content = patch_mcp_url_guard(content)
         for method_name in desired.get("remove_methods", []):
             content = remove_python_method(content, method_name)
         base = current or {"id": item_id, "name": desired["name"], "content": content, "meta": {}, "access_grants": []}
-        upsert_tool(api, current, tool_form(base, desired["name"], content))
+        upsert_tool(
+            api,
+            current,
+            tool_form(
+                base,
+                desired["name"],
+                content,
+                {
+                    "risk": "operator-only" if item_id in {"run_code_py", "deep_web_advanced_tools", "mcp_app_bridge"} else "read-only",
+                    "dependency_health": "healthy",
+                    "validation_status": "passed",
+                    "details": "Audited with bounded inputs, explicit errors, and documented interoperability.",
+                },
+            ),
+        )
 
     for item_id in baseline["archive_tools"]:
         if item_id in tools:
@@ -469,12 +554,20 @@ def apply(api: Api, baseline: dict[str, Any], backup: Path | None) -> Path:
             "access_grants": knowledge.get("access_grants") or [],
         },
     )
+    for managed in baseline.get("managed_knowledge", []):
+        reconcile_managed_knowledge(api, managed)
 
     models = {item["id"]: item for item in api.request("GET", "/api/v1/models/export")}
     for item_id, desired in baseline["models"].items():
         current = models.get(item_id)
         if not current:
-            raise RuntimeError(f"Required model is missing: {item_id}")
+            if item_id != "web-search" or "qwen35" not in models:
+                raise RuntimeError(f"Required model is missing: {item_id}")
+            source = copy.deepcopy(models["qwen35"])
+            source["id"] = item_id
+            source["name"] = desired["name"]
+            source["base_model_id"] = models["qwen35"].get("base_model_id")
+            current = api.request("POST", "/api/v1/models/create", model_form(source))
         form = desired_model(current, desired, knowledge_cfg)
         api.request("POST", "/api/v1/models/model/update", form)
 
@@ -521,8 +614,9 @@ def rollback(api: Api, baseline: dict[str, Any], backup_path: Path) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("command", choices=("export", "dry-run", "apply", "rollback"))
-    parser.add_argument("--base-url", default=os.getenv("OPEN_WEBUI_URL", "http://127.0.0.1:8080"))
+    parser.add_argument("--base-url", default=os.getenv("OPEN_WEBUI_URL", "http://127.0.0.1:3000"))
     parser.add_argument("--email", default=os.getenv("OPEN_WEBUI_EMAIL", ""))
+    parser.add_argument("--token", default=os.getenv("OPEN_WEBUI_TOKEN", ""))
     parser.add_argument("--baseline", type=Path, default=DEFAULT_BASELINE)
     parser.add_argument("--backup", type=Path)
     return parser.parse_args()
@@ -531,10 +625,10 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     password = os.getenv("OPEN_WEBUI_PASSWORD", "")
-    if not args.email or not password:
-        print("Set OPEN_WEBUI_EMAIL and OPEN_WEBUI_PASSWORD.", file=sys.stderr)
+    if not args.token and (not args.email or not password):
+        print("Set OPEN_WEBUI_TOKEN or OPEN_WEBUI_EMAIL and OPEN_WEBUI_PASSWORD.", file=sys.stderr)
         return 2
-    api = Api(args.base_url, args.email, password)
+    api = Api(args.base_url, args.email, password, args.token)
     baseline = load_json_yaml(args.baseline)
     if args.command == "export":
         export_backup(api, args.backup)

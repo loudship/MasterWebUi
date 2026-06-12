@@ -36,7 +36,7 @@ rules:
     severity: critical
     enforced: true
     mode: exact
-    expected: false
+    expected: true
     sources:
       admin: {endpoint: retrieval, pointer: /web/ENABLE_WEB_SEARCH}
   - id: admin.retrieval.chunk_size

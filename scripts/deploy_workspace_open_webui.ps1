@@ -43,7 +43,7 @@ try {
         --restart unless-stopped `
         --network open-webui-master_llm-net `
         --cgroupns private `
-        -p 127.0.0.1:8080:8080 `
+        -p 127.0.0.1:3000:8080 `
         -v open-webui-live-data:/app/backend/data `
         -v /sys/fs/cgroup:/sys/fs/cgroup:rw `
         $Image | Out-Null
@@ -52,7 +52,7 @@ try {
     $healthy = $false
     while ((Get-Date) -lt $deadline) {
         try {
-            $health = Invoke-RestMethod -Uri "http://127.0.0.1:8080/health" -TimeoutSec 5
+            $health = Invoke-RestMethod -Uri "http://127.0.0.1:3000/health" -TimeoutSec 5
             if ($health.status -eq $true) {
                 $healthy = $true
                 break

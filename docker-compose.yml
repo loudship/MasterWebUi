@@ -237,7 +237,15 @@ services:
       ENABLE_OPENAI_API: "true"
       ENABLE_OLLAMA_API: "false"
       ENABLE_DIRECT_CONNECTIONS: "false"
-      ENABLE_WEB_SEARCH: "false"
+      ENABLE_WEB_SEARCH: "true"
+      WEB_SEARCH_ENGINE: "searxng"
+      WEB_SEARCH_TRUST_ENV: "false"
+      WEB_SEARCH_RESULT_COUNT: "3"
+      WEB_SEARCH_CONCURRENT_REQUESTS: "1"
+      WEB_LOADER_ENGINE: "safe_web"
+      WEB_LOADER_CONCURRENT_REQUESTS: "1"
+      SEARXNG_QUERY_URL: "http://searxng:8080/search"
+      SEARXNG_LANGUAGE: "en"
       ENABLE_PERSISTENT_CONFIG: "true"
       ENABLE_API_KEYS: "true"
       ENABLE_WEBSOCKET_SUPPORT: "false"
@@ -265,7 +273,7 @@ services:
       pipelines:
         condition: service_healthy
     ports:
-      - 127.0.0.1:8080:8080
+      - 127.0.0.1:3000:8080
     volumes:
       - open-webui-data:/app/backend/data
     networks:

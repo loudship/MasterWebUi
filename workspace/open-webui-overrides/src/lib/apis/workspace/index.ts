@@ -3,7 +3,7 @@ import { WEBUI_API_BASE_URL } from '$lib/constants';
 export type CatalogStatusItem = {
 	id: string;
 	name: string;
-	kind: 'model' | 'knowledge' | 'prompt' | 'skill' | 'tool';
+	kind: 'model' | 'knowledge' | 'prompt' | 'skill' | 'tool' | 'function';
 	category: string;
 	risk: 'read-only' | 'state-changing' | 'external-network' | 'operator-only';
 	dependency_health: 'healthy' | 'warning' | 'unknown';

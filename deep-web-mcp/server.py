@@ -84,11 +84,12 @@ from database import get_credentials, save_credentials
 from sanitizer import TextSanitizer, MAX_CHARS
 from web_discovery import (
     DEFAULT_MAX_CHARS as DISCOVERY_DEFAULT_MAX_CHARS,
-    DEFAULT_MAX_RESULTS as DISCOVERY_DEFAULT_MAX_RESULTS,
+    DEFAULT_SEARCH_RESULTS as DISCOVERY_DEFAULT_MAX_RESULTS,
     DEFAULT_MAX_TOKENS as DISCOVERY_DEFAULT_MAX_TOKENS,
     discover_web_layouts as run_web_discovery,
     validate_supporting_endpoints as validate_web_dependencies,
 )
+from research import research_web as run_research_web
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(
@@ -283,6 +284,14 @@ class WebDiscoveryInput(BaseModel):
         le=10,
         description="Maximum number of discovered pages to return.",
     )
+
+
+class ResearchInput(BaseModel):
+    query: str = Field(..., min_length=1, max_length=500)
+    strategy: Literal["auto", "general", "deep"] = "auto"
+    domain_filters: list[DomainFilterInput] = Field(default_factory=list)
+    max_iterations: int = Field(default=3, ge=1, le=3)
+    max_sources: int = Field(default=8, ge=1, le=8)
 
 
 # ===========================================================================
@@ -775,6 +784,32 @@ async def discover_web_layouts(
         )
 
 
+@mcp.tool()
+async def research_web(
+    query: str,
+    strategy: Literal["auto", "general", "deep"] = "auto",
+    domain_filters: list[dict[str, Any]] | None = None,
+    max_iterations: int = 3,
+    max_sources: int = 8,
+) -> str:
+    """Run bounded General or Deep Research with verified clickable links."""
+    try:
+        result = await run_research_web(
+            query=query,
+            strategy=strategy,
+            domain_filters=domain_filters or [],
+            max_iterations=max_iterations,
+            max_sources=max_sources,
+        )
+        return json.dumps(result, ensure_ascii=False)
+    except Exception as exc:
+        logger.exception("[RESEARCH] MCP tool failed.")
+        return json.dumps(
+            {"status": "error", "error_code": "RESEARCH_FAILED", "reason": f"{type(exc).__name__}: {exc}"},
+            ensure_ascii=False,
+        )
+
+
 # ===========================================================================
 # FastAPI application  (MCP SSE transport + streaming endpoints)
 # ===========================================================================
@@ -793,7 +828,7 @@ async def health():
         "service": "deep-web-mcp",
         "public_targets_enabled": ALLOW_PUBLIC_TARGETS,
         "allowed_internal_hosts": sorted(ALLOWED_TARGET_HOSTS),
-        "tools": ["fetch_deep_web_data", "search_deep_web_database", "discover_web_layouts"],
+        "tools": ["fetch_deep_web_data", "search_deep_web_database", "discover_web_layouts", "research_web"],
     }
 
 
@@ -854,6 +889,28 @@ async def discover(req: WebDiscoveryInput):
                 "error_code": "DISCOVERY_FAILED",
                 "reason": f"{type(exc).__name__}: {exc}",
             },
+        )
+
+
+@app.post("/research")
+async def research(req: ResearchInput):
+    """Run deterministic web research and return a structured Markdown report."""
+    try:
+        result = await run_research_web(
+            query=req.query,
+            strategy=req.strategy,
+            domain_filters=[item.model_dump() for item in req.domain_filters],
+            max_iterations=req.max_iterations,
+            max_sources=req.max_sources,
+        )
+        if result.get("status") == "error":
+            return JSONResponse(status_code=422, content=result)
+        return result
+    except Exception as exc:
+        logger.exception("[RESEARCH] Unhandled failure.")
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "error_code": "RESEARCH_FAILED", "reason": f"{type(exc).__name__}: {exc}"},
         )
 
 

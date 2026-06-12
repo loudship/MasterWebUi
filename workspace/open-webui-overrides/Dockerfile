@@ -11,6 +11,7 @@ RUN npm run build
 FROM open-webui:0.9.6
 COPY --from=frontend /src/build /app/build
 COPY workspace/open-webui-overrides/backend/open_webui/routers/workspace_catalog.py /app/backend/open_webui/routers/workspace_catalog.py
+COPY workspace/open-webui-overrides/backend/open_webui/routers/workspace_research.py /app/backend/open_webui/routers/workspace_research.py
 COPY workspace/open-webui-overrides/backend/patch_main.py /tmp/patch_main.py
 RUN set -eu; \
     mkdir -p /tmp/gvisor; \

@@ -7,9 +7,21 @@ rag:
 search:
   ENABLE_WEB_SEARCH: true
   WEB_SEARCH_ENGINE: "searxng"
+  WEB_SEARCH_TRUST_ENV: false
   WEB_SEARCH_RESULT_COUNT: 3
-  WEB_SEARCH_CONCURRENT_REQUESTS: 2
+  WEB_SEARCH_CONCURRENT_REQUESTS: 1
+  WEB_LOADER_ENGINE: "safe_web"
+  WEB_LOADER_CONCURRENT_REQUESTS: 1
+  WEB_SEARCH_DOMAIN_FILTER_LIST:
+    - "!cn"
+    - "!baidu.com"
+    - "!zhihu.com"
+    - "!weibo.com"
+    - "!sina.com.cn"
+    - "!csdn.net"
+    - "!163.com"
   SEARXNG_QUERY_URL: "http://searxng:8080/search"
+  SEARXNG_LANGUAGE: "en"
 
 models:
   DEFAULT_MODEL_PARAMS:

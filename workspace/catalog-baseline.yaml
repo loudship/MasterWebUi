@@ -37,18 +37,32 @@
       "tags": ["data-analysis"],
       "capabilities": ["file_context", "file_upload", "code_interpreter", "citations", "status_updates", "usage", "builtin_tools"],
       "builtin_tools": ["code_interpreter"]
+    },
+    "web-search": {
+      "name": "web search",
+      "tool_ids": ["web_research"],
+      "skill_ids": ["evidence-backed-web-research"],
+      "default_features": [],
+      "tags": ["research", "web-search"],
+      "capabilities": ["citations", "status_updates", "usage"],
+      "params": {
+        "function_calling": "native",
+        "temperature": 0,
+        "system": "You are the web search specialist. Always call research_web for current or external information. Honor explicit General Search or Deep Research overrides. Otherwise use deep for investigate, comprehensive, exhaustive, compare, why, research, landscape, evidence, or report requests; use general for immediate factual lookups. Never set max_iterations above 3 or max_sources above 8. General Search must return concise titles, domains, summaries, and verified clickable Markdown links. Deep Research must use the deterministic iterative router, report source failures, synthesize evidence, and provide indexed clickable references. Never invent or omit source URLs."
+      }
     }
   },
   "tools": {
     "deep_web_ecosystem_tools": {"name": "Tool - Deep Web MCP - Search and Extract", "source": "workspace/catalog-tools/deep_web_readonly.py"},
     "deep_web_advanced_tools": {"name": "Tool - Deep Web MCP - Advanced Session and JavaScript", "source": "workspace/catalog-tools/deep_web_advanced.py"},
     "run_code_py": {"name": "Tool - Code Sandbox - Python and Bash", "patch_sandbox_defaults": true},
-    "mcp_app_bridge": {"name": "Tool - MCP Apps - Rich UI Bridge"},
+    "mcp_app_bridge": {"name": "Tool - MCP Apps - Rich UI Bridge", "patch_mcp_url_guard": true},
     "swarm_controls": {"name": "Tool - Orchestrator - Read-Only Status", "source": "workspace/catalog-tools/orchestrator_status.py"},
     "inline_visualizer": {"name": "Tool - Visualization - Inline HTML and SVG", "patch_local_only": true},
     "youtube_transcript_provider": {"name": "Tool - Media - YouTube Transcript via Tor"},
     "calendar_ecosystem_tools": {"name": "Tool - Calendar - Read-Only Fallback", "remove_methods": ["create_event"]},
-    "home_assit": {"name": "Tool - Home Assistant - Read-Only Fallback", "remove_methods": ["call_service"]}
+    "home_assit": {"name": "Tool - Home Assistant - Read-Only Fallback", "remove_methods": ["call_service"]},
+    "web_research": {"name": "Tool - Research - General and Deep Web", "source": "workspace/catalog-tools/web_research.py"}
   },
   "archive_tools": [],
   "archive_functions": ["comfy_mcp_pipeline", "langfuse_filter"],
@@ -57,5 +71,19 @@
     "name": "Knowledge - Roleplay - Galadriel",
     "description": "Roleplay canon and response guidance for the Galadriel preset.",
     "document_name": "galadriel-roleplay-profile.md"
-  }
+  },
+  "managed_knowledge": [
+    {
+      "name": "Knowledge - Operations - Workspace Tool Manual",
+      "description": "Operational manual, safety posture, triggers, and interoperability recipes for Workspace tools.",
+      "document_name": "workspace_tool_operations.md",
+      "source": "docs/manuals/workspace_tool_operations.md"
+    },
+    {
+      "name": "Knowledge - Research - Web Search Reports",
+      "description": "Complete Markdown artifacts produced by the deterministic web research router.",
+      "document_name": "README.md",
+      "content": "# Web Search Reports\n\nDeep Research reports are persisted here by the authenticated Workspace Research endpoint.\n"
+    }
+  ]
 }

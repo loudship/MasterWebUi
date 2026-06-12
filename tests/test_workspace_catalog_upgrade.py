@@ -15,13 +15,14 @@ def load_reconciler():
 
 def test_baseline_has_exact_target_catalog():
     baseline = json.loads((ROOT / "workspace" / "catalog-baseline.yaml").read_text(encoding="utf-8"))
-    assert set(baseline["models"]) == {"qwen35", "qwen257b", "moyclark", "-data-analyst--developer"}
-    assert len(baseline["tools"]) == 9
+    assert set(baseline["models"]) == {"qwen35", "qwen257b", "moyclark", "-data-analyst--developer", "web-search"}
+    assert len(baseline["tools"]) == 10
     assert baseline["archive_tools"] == []
     assert set(baseline["archive_functions"]) == {"comfy_mcp_pipeline", "langfuse_filter"}
     assert baseline["models"]["qwen35"]["builtin_tools"] == ["web_search", "code_interpreter"]
     assert baseline["models"]["-data-analyst--developer"]["builtin_tools"] == ["code_interpreter"]
     assert baseline["models"]["moyclark"]["knowledge_context"] == "full"
+    assert baseline["models"]["web-search"]["tool_ids"] == ["web_research"]
 
 
 def test_desired_models_use_a_narrow_builtin_tool_allowlist():
@@ -124,3 +125,5 @@ def test_ui_override_contracts_are_present():
     assert "CatalogFilters" in patch
     assert "CatalogBadges" in patch
     assert '@router.get("/status"' in router
+    assert 'kind="function"' in router
+    assert "/workspace/functions" in patch

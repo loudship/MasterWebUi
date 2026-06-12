@@ -11,6 +11,7 @@ def test_deep_web_mcp_preserves_open_webui_bridge_contract():
     assert "js_script:        str  = None" in SERVER
     assert "async def search_deep_web_database(" in SERVER
     assert "async def discover_web_layouts(" in SERVER
+    assert "async def research_web(" in SERVER
 
 
 def test_deep_web_mcp_exposes_real_health_search_and_extract_routes():
@@ -18,6 +19,7 @@ def test_deep_web_mcp_exposes_real_health_search_and_extract_routes():
     assert '@app.get("/health/validation")' in SERVER
     assert '@app.post("/search")' in SERVER
     assert '@app.post("/discover")' in SERVER
+    assert '@app.post("/research")' in SERVER
     assert '@app.post("/extract/stream")' in SERVER
     assert 'app.mount("/", mcp.sse_app())' in SERVER
     assert 'MCP_URL}/health' in (ROOT / "monitor_daemon.py").read_text(encoding="utf-8")
@@ -42,3 +44,12 @@ def test_search_contract_is_compact_and_exposes_ranked_best_match():
 def test_discovery_contract_requires_json_only_items():
     assert "discover_web_layouts" in SERVER
     assert "@app.post(\"/discover\")" in SERVER
+
+
+def test_research_contract_is_bounded_and_exposes_verified_links():
+    research = (ROOT / "deep-web-mcp" / "research.py").read_text(encoding="utf-8")
+    assert 'Literal["auto", "general", "deep"]' in research
+    assert "max_iterations = max(1, min(int(max_iterations), 3))" in research
+    assert "max_sources = max(1, min(int(max_sources), 8))" in research
+    assert '"verified_url"' in research
+    assert '"markdown_report"' in research

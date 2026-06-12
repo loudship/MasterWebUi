@@ -7,6 +7,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends
 from open_webui.internal.db import get_async_session
 from open_webui.models.knowledge import Knowledges
+from open_webui.models.functions import Functions
 from open_webui.models.models import Models
 from open_webui.models.prompts import Prompts
 from open_webui.models.skills import Skills
@@ -17,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter()
 
-CatalogKind = Literal["model", "knowledge", "prompt", "skill", "tool"]
+CatalogKind = Literal["model", "knowledge", "prompt", "skill", "tool", "function"]
 RiskLevel = Literal["read-only", "state-changing", "external-network", "operator-only"]
 HealthLevel = Literal["healthy", "warning", "unknown"]
 ValidationLevel = Literal["passed", "warning", "failed", "not-validated"]
@@ -105,6 +106,7 @@ async def get_workspace_catalog_status(
     skills = await Skills.get_skills(db=db)
     prompts = await Prompts.get_prompts(db=db)
     knowledge_bases = await Knowledges.get_knowledge_bases(db=db)
+    functions = await Functions.get_functions(db=db)
 
     attachment_counts: Counter[str] = Counter()
     for model in models:
@@ -240,7 +242,28 @@ async def get_workspace_catalog_status(
             )
         )
 
+    for function in functions:
+        meta = function.meta.model_dump() if hasattr(function.meta, "model_dump") else (function.meta or {})
+        catalog = _catalog_meta(meta)
+        validation_status, last_validated_at = _validation(catalog)
+        items.append(
+            CatalogStatusItem(
+                id=function.id,
+                name=function.name,
+                kind="function",
+                category=_category(function.name, "function"),
+                risk=_risk(function.id, "function", None, catalog),
+                dependency_health="healthy" if function.is_active else "warning",
+                attachment_count=attachment_counts[function.id],
+                version=_version(meta, catalog),
+                validation_status=validation_status,
+                last_validated_at=last_validated_at,
+                details="Function is active." if function.is_active else "Function is disabled.",
+            )
+        )
+
+    counts = Counter(item.kind for item in items)
     return CatalogStatusResponse(
         items=items,
-        counts=dict(Counter(item.kind for item in items)),
+        counts={kind: counts[kind] for kind in ("model", "prompt", "knowledge", "tool", "function", "skill")},
     )

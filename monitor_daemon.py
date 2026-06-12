@@ -882,7 +882,7 @@ async def web_tools_config():
     return {
         "firecrawl_mode": "native" if FIRECRAWL_URL else "crawl4ai_compatibility",
         "firecrawl_configured": bool(FIRECRAWL_URL),
-        "open_webui_url": "http://localhost:8080/",
+        "open_webui_url": "http://localhost:3000/",
         "interfaces": ["overview", "search", "crawl", "firecrawl", "monitor"],
     }
 

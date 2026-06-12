@@ -86,6 +86,28 @@ for (const page of pages) {
 }
 
 const layout = 'src/routes/(app)/workspace/+layout.svelte';
+replaceOnce(
+	layout,
+	"} else if ($page.url.pathname.includes('/skills') && !$user?.permissions?.workspace?.skills) {",
+	"} else if ($page.url.pathname.includes('/functions')) {\n\t\t\t\tgoto('/');\n\t\t\t} else if ($page.url.pathname.includes('/skills') && !$user?.permissions?.workspace?.skills) {"
+);
+replaceOnce(
+	layout,
+	"\t\t\t\t\t\t{#if $user?.role === 'admin' || $user?.permissions?.workspace?.tools}",
+	`\t\t\t\t\t\t{#if $user?.role === 'admin'}
+\t\t\t\t\t\t\t<a
+\t\t\t\t\t\t\t\tdraggable="false"
+\t\t\t\t\t\t\t\taria-current={$page.url.pathname.includes('/workspace/functions') ? 'page' : null}
+\t\t\t\t\t\t\t\tclass="min-w-fit p-1.5 {$page.url.pathname.includes('/workspace/functions')
+\t\t\t\t\t\t\t\t\t? ''
+\t\t\t\t\t\t\t\t\t: 'text-gray-300 dark:text-gray-600 hover:text-gray-700 dark:hover:text-white'} transition select-none"
+\t\t\t\t\t\t\t\ttitle="Runtime filters, actions, and pipeline functions."
+\t\t\t\t\t\t\t\thref="/workspace/functions">{$i18n.t('Functions')}</a
+\t\t\t\t\t\t\t>
+\t\t\t\t\t\t{/if}
+
+\t\t\t\t\t\t{#if $user?.role === 'admin' || $user?.permissions?.workspace?.tools}`
+);
 for (const [href, title] of [
 	['/workspace/models', 'Reusable model presets and their attached capabilities.'],
 	['/workspace/knowledge', 'Curated documents that models can retrieve as context.'],
@@ -99,4 +121,36 @@ replaceOnce(
 	layout,
 	'\t\t<div\n\t\t\tclass="  pb-1 px-3 md:px-[18px] flex-1 max-h-full overflow-y-auto"',
 	'\t\t<div class="px-4 pt-1 text-xs text-gray-500">Workspace catalog: reusable presets, context, prompts, skills, and executable integrations. Hover or focus badges for safety and dependency details.</div>\n\t\t<div\n\t\t\tclass="  pb-1 px-3 md:px-[18px] flex-1 max-h-full overflow-y-auto"'
+);
+
+const functionsPage = 'src/lib/components/admin/Functions.svelte';
+replaceOnce(
+	functionsPage,
+	"import Spinner from '../common/Spinner.svelte';",
+	"import Spinner from '../common/Spinner.svelte';\n\timport CatalogBadges from '../workspace/common/CatalogBadges.svelte';\n\timport CatalogFilters from '../workspace/common/CatalogFilters.svelte';\n\timport { getCatalogStatus } from '$lib/apis/workspace';\n\timport { catalogMatches, catalogStatusMap } from '../workspace/common/catalog';"
+);
+replaceOnce(
+	functionsPage,
+	"let loaded = false;",
+	"let loaded = false;\n\tlet catalogStatuses = {};\n\tlet riskFilter = '';\n\tlet dependencyHealthFilter = '';\n\tlet attachmentFilter = '';\n\tlet validationStatusFilter = '';\n\tconst catalogFilters = () => ({ risk: riskFilter, dependencyHealth: dependencyHealthFilter, attachment: attachmentFilter, validationStatus: validationStatusFilter });"
+);
+replaceOnce(
+	functionsPage,
+	"onMount(async () => {",
+	"onMount(async () => {\n\t\tcatalogStatuses = catalogStatusMap(await getCatalogStatus(localStorage.token).catch(() => []));"
+);
+replaceOnce(
+	functionsPage,
+	"{#if (filteredItems ?? []).length !== 0}",
+	"<CatalogFilters bind:risk={riskFilter} bind:dependencyHealth={dependencyHealthFilter} bind:attachment={attachmentFilter} bind:validationStatus={validationStatusFilter} />\n\t\t\t{#if (filteredItems ?? []).length !== 0}"
+);
+replaceOnce(
+	functionsPage,
+	"{#each filteredItems as func (func.id)}",
+	"{#each filteredItems.filter((func) => catalogMatches(catalogStatuses[func.id], catalogFilters())) as func (func.id)}"
+);
+replaceOnce(
+	functionsPage,
+	'<div class=" flex items-center gap-1.5">',
+	'<CatalogBadges item={catalogStatuses[func.id] ?? null} />\n\t\t\t\t\t\t\t\t\t\t\t<div class=" flex items-center gap-1.5">'
 );

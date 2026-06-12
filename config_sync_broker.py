@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 # Load environment variables
 load_dotenv()
 
-WEBUI_BASE_URL = os.getenv("WEBUI_BASE_URL", "http://localhost:8080").rstrip("/")
+WEBUI_BASE_URL = os.getenv("WEBUI_BASE_URL", "http://localhost:3000").rstrip("/")
 WEBUI_API_KEY = os.getenv("WEBUI_API_KEY")
 
 if not WEBUI_API_KEY:
