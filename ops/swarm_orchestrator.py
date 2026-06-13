@@ -1,3 +1,11 @@
+"""DEPRECATED — superseded by the LangGraph orchestrator
+(backend/langgraph_orchestrator.py via pipelines/langgraph_router.py).
+
+This prototype targets LM Studio directly (bypassing the inference gateway's
+allowlist and GPU serialization) and points at a hardcoded test Qdrant
+collection. Kept for reference only; not wired into any compose service.
+"""
+
 import re
 import asyncio
 import aiohttp
@@ -8,7 +16,7 @@ from typing import List, Dict, Any
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] [%(levelname)s] %(message)s')
 logger = logging.getLogger("Swarm_Orchestrator")
 
-LM_STUDIO_API_URL = "http://host.docker.internal:1234/v1/chat/completions"
+LM_STUDIO_API_URL = "http://host.docker.internal:4321/v1/chat/completions"
 
 class ContextFirewall:
     def __init__(self, max_length: int = 20000):

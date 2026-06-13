@@ -2,13 +2,15 @@ import asyncio
 import time
 import aiohttp
 import logging
+import pathlib, sys
+sys.path.insert(0, str(pathlib.Path(__file__).parents[2] / "ops"))
 from swarm_orchestrator import ContextFirewall, Pipeline
 
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] [%(levelname)s] %(message)s')
 logger = logging.getLogger("Swarm_Stress_Test")
 
 # Configurations
-LM_STUDIO_URL = "http://localhost:1234/v1/chat/completions"
+LM_STUDIO_URL = "http://localhost:4321/v1/chat/completions"
 
 async def vram_collision_injection():
     logger.info("=== STARTING VRAM COLLISION INJECTION ===")

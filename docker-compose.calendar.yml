@@ -1,0 +1,48 @@
+name: open-webui-master
+
+services:
+  calendar-db:
+    image: postgres@sha256:df7bca0066e6f60cc3dd32faa70caddec20e2c22b58932f79498e5704b23854a
+    container_name: calendar-db
+    environment:
+      POSTGRES_DB: calendar_db
+      POSTGRES_USER: calendar
+      POSTGRES_PASSWORD: ${CALENDAR_DB_PASSWORD:?Set CALENDAR_DB_PASSWORD in the operator environment}
+    volumes:
+      - calendar-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U calendar -d calendar_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - live-llm-net
+    restart: unless-stopped
+
+  calendar-mcp:
+    image: hdn179/calendar-mcp@sha256:0b1a4e66dad2fc1ab098c2a348330a0a67ea98c1dc5629e8f05406c994e7e65c
+    container_name: calendar-mcp
+    environment:
+      DB_POSTGRES_URL: postgresql://calendar:${CALENDAR_DB_PASSWORD:?Set CALENDAR_DB_PASSWORD in the operator environment}@calendar-db:5432/calendar_db
+      CALENDAR_MCP_JWT_SECRET_KEY: ${CALENDAR_MCP_JWT_SECRET_KEY:?Set CALENDAR_MCP_JWT_SECRET_KEY in the operator environment}
+    volumes:
+      - calendar-mcp-data:/app/data
+    depends_on:
+      calendar-db:
+        condition: service_healthy
+    networks:
+      - live-llm-net
+    restart: unless-stopped
+
+networks:
+  live-llm-net:
+    external: true
+    name: open-webui-master_llm-net
+
+volumes:
+  calendar-db-data:
+    external: true
+    name: open-webui-master_calendar-db-data
+  calendar-mcp-data:
+    external: true
+    name: open-webui-master_calendar-mcp-data

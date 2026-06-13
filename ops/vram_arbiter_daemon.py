@@ -91,9 +91,22 @@ HTTP_TIMEOUT_S: float = 5.0
 # lms subprocess timeout (seconds)
 LMS_TIMEOUT_S:  float = 15.0
 
+# VRAM held back for the desktop compositor / browser UI when the ceiling is
+# derived from measured NVML totals (bytes).
+UI_VRAM_RESERVE_BYTES: int = int(
+    float(os.environ.get("UI_VRAM_RESERVE_GB", "1.5")) * 1024 * 1024 * 1024
+)
+
 
 def _extract_loaded_models(data: dict) -> set[str]:
-    """Return only model keys that LM Studio reports as currently loaded."""
+    """Return only model keys that LM Studio reports as currently loaded.
+
+    Supported response shapes, newest first:
+      1. /api/v0/models REST schema: {"data": [{"id", "state": "loaded"|...}]}
+      2. {"models": [{"key", "loaded_instances": [...]}]}
+      3. Legacy OpenAI-compatible /v1/models: {"data": [{"id"}]} — the endpoint
+         only lists loaded models, so every entry counts.
+    """
     models = data.get("models")
     if isinstance(models, list):
         return {
@@ -102,12 +115,15 @@ def _extract_loaded_models(data: dict) -> set[str]:
             if model.get("key") and model.get("loaded_instances")
         }
 
-    # Backward-compatible fallback for the legacy OpenAI-compatible endpoint.
-    return {
-        model["id"]
-        for model in data.get("data", [])
-        if isinstance(model, dict) and model.get("id")
-    }
+    entries = [model for model in data.get("data", []) if isinstance(model, dict)]
+    if any("state" in model for model in entries):
+        return {
+            model["id"]
+            for model in entries
+            if model.get("id") and model.get("state") == "loaded"
+        }
+
+    return {model["id"] for model in entries if model.get("id")}
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +176,34 @@ class VRAMArbiterAsync:
         self.resident_since: dict[str, float] = {}
         self.last_eviction:  dict[str, float] = {}
         self._lms_bin: str = _find_lms_binary()
+        self._nvml_handle = None
+        self._nvml_unavailable: bool = False
+
+    # ------------------------------------------------------------------
+    # Measured VRAM via NVML (optional, host-side only)
+    # ------------------------------------------------------------------
+
+    def _measured_vram(self) -> Optional[tuple[int, int]]:
+        """Return (used_bytes, total_bytes) from NVML, or None when NVML is
+        unavailable (pynvml not installed, or running off-host)."""
+        if self._nvml_unavailable:
+            return None
+        try:
+            import pynvml
+            if self._nvml_handle is None:
+                pynvml.nvmlInit()
+                self._nvml_handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+            info = pynvml.nvmlDeviceGetMemoryInfo(self._nvml_handle)
+            return int(info.used), int(info.total)
+        except Exception as exc:
+            self._nvml_unavailable = True
+            logger.warning(
+                "[ARBITER] NVML unavailable (%s: %s) — falling back to the "
+                "per-model VRAM estimate. Install pynvml on the host for "
+                "measured enforcement.",
+                type(exc).__name__, exc,
+            )
+            return None
 
     # ------------------------------------------------------------------
     # Eviction cooldown guard
@@ -176,7 +220,13 @@ class VRAMArbiterAsync:
 
     async def _evict_model_async(self, model_key: str) -> bool:
         """
-        Apply TTL 300 to *model_key* via the lms CLI.
+        Unload *model_key* from VRAM via the lms CLI.
+
+        `lms unload` frees the memory immediately. (The previous
+        implementation ran `lms load --ttl 300`, which (re)loads the model and
+        merely schedules an idle eviction — the opposite of reclaiming VRAM at
+        breach time.)
+
         Uses asyncio.create_subprocess_exec so the call does not block the
         event loop during token generation or heavy I/O.
         Returns True on success, False on any failure.
@@ -186,13 +236,13 @@ class VRAMArbiterAsync:
             return True   # not an error; cooldown is expected behaviour
 
         logger.info(
-            "[ARBITER] VRAM_CEILING breach — enforcing TTL 300 on %r via %s",
+            "[ARBITER] VRAM ceiling breach — unloading %r via %s",
             model_key, self._lms_bin,
         )
 
         try:
             proc = await asyncio.create_subprocess_exec(
-                self._lms_bin, "load", model_key, "--ttl", "300",
+                self._lms_bin, "unload", model_key,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -211,7 +261,7 @@ class VRAMArbiterAsync:
 
             if proc.returncode == 0:
                 logger.info(
-                    "[ARBITER] TTL 300 applied successfully to %r.  stdout: %s",
+                    "[ARBITER] Unloaded %r successfully.  stdout: %s",
                     model_key, stdout.decode(errors="replace").strip(),
                 )
                 self.last_eviction[model_key] = time.monotonic()
@@ -320,24 +370,34 @@ class VRAMArbiterAsync:
         self.active_models = current_models
 
         # ── VRAM ceiling check ─────────────────────────────────────────────
-        estimated_vram = self._estimate_vram_bytes(current_models)
-        ceiling_pct    = estimated_vram / VRAM_CEILING * 100 if VRAM_CEILING else 0
+        # Prefer measured bytes from NVML; fall back to the per-model estimate.
+        # When totals are measurable the ceiling also honours the UI reserve so
+        # the compositor/browser never get squeezed out of the 12 GB card.
+        measured = self._measured_vram()
+        if measured is not None:
+            estimated_vram, total_bytes = measured
+            ceiling = min(VRAM_CEILING, max(0, total_bytes - UI_VRAM_RESERVE_BYTES))
+        else:
+            estimated_vram = self._estimate_vram_bytes(current_models)
+            ceiling = VRAM_CEILING
+        ceiling_pct = estimated_vram / ceiling * 100 if ceiling else 0
 
         logger.debug(
-            "[ARBITER] Active models: %d  |  Est. VRAM: %.2f GiB  |  "
+            "[ARBITER] Active models: %d  |  VRAM (%s): %.2f GiB  |  "
             "Ceiling: %.2f GiB  |  Usage: %.1f%%",
             len(current_models),
+            "measured" if measured is not None else "estimated",
             estimated_vram / (1024 ** 3),
-            VRAM_CEILING / (1024 ** 3),
+            ceiling / (1024 ** 3),
             ceiling_pct,
         )
 
-        if estimated_vram >= VRAM_CEILING:
+        if estimated_vram >= ceiling:
             logger.warning(
-                "[ARBITER] ⚠ VRAM_CEILING BREACH — estimated %.2f GiB ≥ ceiling %.2f GiB. "
-                "Triggering cache eviction protocol (TTL=300s).",
+                "[ARBITER] ⚠ VRAM CEILING BREACH — %.2f GiB ≥ ceiling %.2f GiB. "
+                "Unloading the least-recently-loaded model.",
                 estimated_vram / (1024 ** 3),
-                VRAM_CEILING / (1024 ** 3),
+                ceiling / (1024 ** 3),
             )
 
             # Evict the LRU (oldest-resident) model to reclaim memory
@@ -408,6 +468,13 @@ class VRAMArbiterAsync:
 
 def main() -> None:
     arbiter = VRAMArbiterAsync()
+    if shutil.which("lms") is None and os.name != "nt":
+        logger.critical(
+            "[ARBITER] 'lms' CLI is not on PATH and this is not a Windows host. "
+            "Eviction WILL fail from inside a container: the LM Studio CLI lives "
+            "on the host. Run this daemon host-side (scheduled task / service) "
+            "so it can reach lms.exe."
+        )
     try:
         asyncio.run(arbiter.run())
     except KeyboardInterrupt:

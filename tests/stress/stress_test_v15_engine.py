@@ -56,7 +56,7 @@ logger = logging.getLogger("StressTestV15Engine")
 PIPELINE_FILTER_INLET_IMPORT_PATH = os.path.join(os.path.dirname(__file__), "pipelines")
 
 LANGGRAPH_ORCHESTRATOR_URL: str = "http://localhost:8100/invoke"
-LM_STUDIO_MODELS_URL: str = "http://localhost:1234/v1/models"
+LM_STUDIO_MODELS_URL: str = "http://localhost:4321/v1/models"
 QDRANT_BASE_URL: str = "http://localhost:6333"
 LANGFUSE_BASE_URL: str = "http://localhost:3000"
 

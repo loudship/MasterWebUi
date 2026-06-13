@@ -11,6 +11,10 @@ from urllib.parse import urlparse
 
 import httpx
 
+from policy import (
+    RESEARCH_MIN_ACTIVE_SOURCES as _MIN_ACTIVE_SOURCES,
+    RESEARCH_MIN_EVIDENCE_CHARS as _MIN_EVIDENCE_CHARS,
+)
 from web_discovery import (
     SEARCH_TIMEOUT_S,
     SEARXNG_URL,
@@ -26,10 +30,6 @@ _DEEP_HINTS = re.compile(
     r"\b(deep research|investigate|comprehensive|exhaustive|compare|landscape|report|evidence|why)\b",
     re.I,
 )
-
-# Sufficiency thresholds for the multi-hop loop.
-_MIN_ACTIVE_SOURCES: int = 2
-_MIN_EVIDENCE_CHARS: int = 400
 
 # Gap sub-query templates.  {year} is resolved at call time so patterns stay fresh.
 _GAP_PATTERNS = [

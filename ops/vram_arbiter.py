@@ -1,3 +1,10 @@
+"""DEPRECATED — superseded by vram_arbiter_daemon.py (the deployed arbiter).
+
+This v1 polls the OpenAI-compatible /v1/models endpoint and posts to
+/v1/models/unload, which is not part of LM Studio's OpenAI-compatible surface.
+Kept for reference only; do not run alongside the daemon.
+"""
+
 import asyncio
 import aiohttp
 import time
@@ -6,7 +13,7 @@ import logging
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] [%(levelname)s] %(message)s')
 logger = logging.getLogger("VRAM_Arbiter")
 
-LM_STUDIO_BASE_URL = "http://host.docker.internal:1234/v1"
+LM_STUDIO_BASE_URL = "http://host.docker.internal:4321/v1"
 MAX_CONCURRENT_MODELS = 1
 POLL_INTERVAL_SECONDS = 2.0
 

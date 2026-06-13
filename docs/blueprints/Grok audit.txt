@@ -1,0 +1,99 @@
+Strict code quality audit of current working changes (unstaged modifications + active feature delta on main @ f5314c1).
+
+The working tree shows ~29 modified files with a large net delta (+1576/-358 insertions in the captured stat) plus a large set of untracked additions (new catalog-/functions, services/telemetry-gateway + pipelines, many test_.py, reports, calendar tools, etc.). The diff and tree reflect ongoing "hardened workspace catalog + deep web research + orchestrator stabilization + inference/VRAM layering" work.
+
+This is not approvable under the stated bar. There are clear structural regressions, file-size boundary violations (or near-misses driven by this work), duplication instead of canonical consolidation, and "spaghetti growth" via ad-hoc patches and layers. The changes often fix local symptoms (zero-vector embeddings, stream interrupt, unbounded registries, VRAM blowups) by adding more specialized code rather than deleting concepts.
+
+1. Highest-severity structural regression: the overrides / patch layer (workspace/open-webui-overrides + related)
+
+patch_main.py does runtime string-replace surgery on the installed /app/backend/open_webui/main.py (anchor matching for imports + include_router insertion of workspace_catalog and workspace_research).
+
+patch_frontend.mjs (~250 lines of replaceOnce calls with fragile anchors) mutates multiple Svelte source files in the built Open WebUI tree at image build time:
+• Every major workspace list page (Models.svelte, Tools.svelte, Skills.svelte, Prompts.svelte, Knowledge.svelte) gets injected CatalogBadges + CatalogFilters + catalog status wiring + filtered .filter(...) lists.
+• Functions admin page similarly patched.
+• MarkdownTokens.svelte hacked for "brutalist-artifact" markers + massive appended <style> block with universal descendant selectors.
+• Workspace layout + nav tweaks + title annotations.
+
+There is a full vendored open-webui-0.9.6/ tree + the overrides/ subtree (routers copied, Dockerfile, src/ Svelte fragments, TS API bits).
+
+This is the anti-pattern the rules target. It scatters feature logic (catalog risk/dependency/validation badges + filters for "safe" workspace items, research persistence into Knowledge, brutalist rendering, functions nav gating) across string patches on a third-party app instead of using the official extension points cleanly. Every upstream Open WebUI change becomes a re-patch exercise. The "current branch's changes" include ongoing maintenance of this parallel universe (e.g., the frontend patch hunks in this diff).
+
+Code-judo move (strongly preferred): Kill the source patching. Implement the workspace catalog as real Open WebUI Functions/Tools (the mechanism the existing pipelines/langgraph_router.py already partially rides) seeded via public APIs. The scripts/reconcile_workspace_catalog.py (and validate_* siblings) already demonstrate API-driven reconciliation for skills/prompts against a catalog-baseline.yaml. Extend that pattern for the curated executable tools. The UI catalog visibility, badges, and filters can live as a self-contained workspace component that registers through the standard plugin surface (or a documented "Functions" convention) without touching main.py or Svelte internals. Reduce overrides/ to (at most) a tiny COPY of additional function Python files + docs. This deletes an entire fragile layer, removes the vendored tree smell, and makes the integration "boring" and upgrade-resilient.
+
+The current approach makes the surrounding codebase tangibly harder to reason about and is a presumptive blocker.
+
+2. File-size and decomposition boundary violations (and near-misses)
+
+• deep-web-mcp/server.py: 984 lines. This single file contains the FastMCP instance + 4 @mcp.tool() definitions, the entire _crawl4ai_extract (300+ lines of BrowserConfig fallbacks, credential list-walking for __jwt__ entries, CrawlerRunConfig, error classification for 403/timeout/cloudflare/ERR_*, markdown extraction variants, sanitizer handoff), the ExtractionTask dataclass + _prune_task_registry + background task + polling SSE generator for /extract/stream, multiple Pydantic models, FastAPI routes (/research, /discover, /search, /extract/*, health/validation, credentials store), and wiring.
+
+  The prior commit already added substantial research surface; this delta and untracked work keep growing it. Per the explicit rule, treat pushing (or skating right up to) 1k lines as a strong smell. "Prefer extracting helpers, subcomponents, modules..."
+
+  Immediate decomposition required:
+  • extraction.py (or crawler.py): _crawl4ai_extract, task registry, prune, progress, BrowserConfig/Crawl4AI glue, sanitizer integration.
+  • mcp_tools.py: the @mcp.tool() defs + their Pydantic inputs (FetchDeepWebDataInput etc.).
+  • api.py: FastAPI app, SSE generator, routes, request models for the HTTP surface.
+  • server.py: tiny wiring + uvicorn/mcp run.
+
+  Each piece then becomes small, independently testable, and the "MCP + extraction perimeter" contract is clearer.
+
+• workspace/catalog-tools/web_research.py: 315 lines after substantial growth in/around this delta. It is a self-contained 4-hop imperative controller (MAX_HOPS, PER_HOP_TIMEOUT_S/TOTAL_BUDGET_S gates, _is_sufficient with MIN_ACTIVE_SOURCES_SUFFICIENT + char threshold, static _GAP_PATTERNS, de-dup by URL, hop trace, _render_report markdown builder, _call_research client). Marketed in the module docstring as "ReAct Agentic Controller" — it is not; it is a fixed for-loop with template-based gap queries.
+
+  Large single addition of a full agentic loop + report renderer as "one tool file" is the kind of sprawl the rule warns against. Extract policies (sufficiency, gap generation, budgeting) and the report renderer; or better, see duplication point below.
+
+Other files in the delta (orchestrator ~762 lines post-changes, pipeline ~328, inference-gateway ~318, migration/migrate_state.py +157 net in delta) are also accumulating density.
+
+3. Duplication + wrong-layer research logic (missed dramatic simplification)
+
+There are now multiple overlapping implementations of "web research" control flow:
+
+• deep-web-mcp/research.py (the canonical one): choose_strategy, _search (SearXNG + domain clause), parallel _validate_link (with semaphore), optional deep extract_layout_document gather, markdown report assembly, trace.
+• workspace/catalog-tools/web_research.py: outer 4-hop loop that calls the /research HTTP endpoint repeatedly, applies its own sufficiency + budget + gap templates + de-dup + separate report renderer, returns a different-shaped payload.
+• workspace/open-webui-overrides/backend/open_webui/routers/workspace_research.py: thin proxy to the same /research + optional side-effect persist to a "Knowledge - Research - Web Search Reports" collection via upload_file_handler.
+• Plus untracked catalog-functions/agentic_react_loop.py (outlet filter for clarification in ReAct-style loops) and related catalog-* pieces.
+
+The catalog "tool" version duplicates budgeting, sufficiency evaluation, tracing, gap filling, and report building that would be far cleaner inside the deep-web-mcp service (where link verification and extraction already happen inside the controlled egress perimeter). The current split forces the Open WebUI-side tool to drive iterations and re-parse results.
+
+Code-judo opportunity: Consolidate. Enhance the core research_web (or add a bounded multi-iteration variant) in deep-web-mcp with max_hops / total_budget_s / sufficiency policy parameters. Make the catalog tool a thin 1:1 caller (or remove the hop logic from it entirely). Delete one of the report renderers and one of the trace shapes. This removes an entire layer of duplication, moves control to the right boundary (the air-gap research perimeter), and makes the "4-hop deterministic research" feel like a natural extension of one service instead of two competing loops + a proxy.
+
+The same pattern appears elsewhere: sanitization logic (base64 stripping, length caps, markdown flattening) lives in pipelines/langgraph_router.py with a big regex suite and in deep-web-mcp's sanitizer.py; limits like 768-dim embeddings, 20k chars, 3 loops, specific timeouts are repeated across modules instead of a shared policy/constants module.
+
+4. Orchestrator + pipeline: added branching/orchestration complexity for fixes
+
+backend/langgraph_orchestrator.py (the delta added model cache + _embed_text helper to fix zero-vector semantic retrieval, proper embedding in Lorekeeper + Continuity_Verifier + upsert paths, and a full queue + run_graph task + _offer sentinel dance + _active_tasks registry + finally-block cleanup for /stream so that /interrupt can cancel streamed runs).
+
+The streaming implementation is now noticeably more intricate (special-casing node names for node_end events, manual queue full handling for the sentinel, task cancel + pop coordination, separate event_generator). The graph itself has the keyword-heuristic Semantic_Router_Node (http/crawl → web, contradiction/lore/story → narrative, else factual), the Simulator (HITL on high-risk markers), 3-loop Continuity_Verifier with canon/contradiction prompts, fail-safe, etc. Global module state for graph, checkpointer, tasks, caches, and ops pool is pervasive.
+
+The pipelines/langgraph_router.py changes (ThreadRegistry is a clear win — bounded OrderedDict + TTL + chat-scoped keys via metadata/chat_id to prevent cross-chat thread leakage and unbounded growth) sit on top of heavy inlet sanitization, retroactive-edit detection via magic __last_committed_input__ in the body, SSE reassembly with hard buffer cap, and dispatch to /stream vs /invoke + /interrupt.
+
+These fixes were necessary (per the P2-* audit comments), but the implementations add moving pieces, special cases, and stringly side-channels rather than simplifying the underlying model. The narrative continuity machine feels like a self-contained advanced feature whose router, embedding, qdrant alias, and HITL concerns have leaked into the general invoke/stream surface.
+
+Opportunities:
+• Make interrupt/cancellation a first-class cleaner concern (LangGraph + FastAPI streaming has established patterns; the custom queue + node-name table + task dict is bespoke).
+• Push the narrative-specific state machine (or its canon/continuity/HITL policy) behind a more isolated boundary or separate graph if it is not the primary workload.
+• Centralize content filtering / VRAM budgets.
+
+5. Broader modularity, boundary, and "spaghetti growth" issues
+
+• Root of repo + scripts/ + tests/ + services/ + workspace/{catalog-baseline.yaml, catalog-tools/, catalog-functions/} + backend/ + pipelines/ contain a large number of one-off or narrowly-scoped .py files (stress tests, arbiter daemons, reconcile/validate/hardened cutover scripts, desktop_eye, migration, hitl_*, langgraph_pipe, etc.). Many untracked additions continue the pattern. This is exactly "random spaghetti growth" and "new ad-hoc conditionals / one-off branches" / "bespoke helpers where canonical homes should exist." There is no crisp top-level "workspace/" or "catalog/" package with clear ownership.
+• scripts/reconcile_workspace_catalog.py (and peers) embed data (SKILLS/PROMPTS lists) and do imperative REST reconciliation. Useful ops tooling, but it belongs under the workspace package as library code + CLI rather than proliferating root/scripts.
+• vram_arbiter* + Dockerfile.arbiter notes show pragmatic host/container split for lms CLI eviction, but it is another bespoke daemon with its own polling/eviction model.
+• Repeated use of dict[str, Any], status strings ("success"/"error" + error_code), manual list/dict walking for credentials, magic numbers, and per-module caches. The NarrativeState TypedDict is large and only partially populated by each node.
+• The "catalog" vision (curated safe tools with risk/dependency/validation badges surfaced in the UI) is reasonable for an air-gapped hardened deployment, but the realization via patches + many small catalog-*.py + dual research loops + side-effect persistence makes it more coupled and less legible.
+
+Summary and recommended path
+
+These changes deliver real value (embedding correctness, interruptible streams, bounded research with budgets, catalog seeding, VRAM protection, thread scoping, etc.) but at the cost of making the local architecture more indirect, duplicated, and patch-dependent. Several of the "P2-*" audit fixes were done by bolting on rather than by a cleaner reframing that would have deleted categories of complexity.
+
+Presumptive blockers (fix before anything else):
+• The source-level patching / overrides mechanism (delete or reduce to pure API-driven + standard Functions/Tools).
+• deep-web-mcp/server.py decomposition (it is one feature addition away from crossing 1k in an already mixed-concern file).
+• Consolidation of the research/hop/sufficiency/report logic into one canonical home (deep-web-mcp) instead of duplicating across catalog tool + proxy.
+
+Secondary but high-impact:
+• Extract policies, sanitizers, budgets, and constants so they are not reimplemented in the pipeline, deep-mcp, orchestrator, and catalog tools.
+• Simplify the streaming + task tracking in the orchestrator (or isolate the narrative graph).
+• Move the long tail of one-off scripts, daemons, and catalog fragments under coherent packages with fewer root-level entry points.
+
+If the intent is a hardened air-gapped Open WebUI deployment with curated workspace capabilities and deep-web egress controls, the cleanest long-term structure is: minimal (or zero) patches on the base image, a small number of well-factored services (inference-gateway as the serialization/allowlist proxy, deep-web-mcp as the single research/extraction perimeter, langgraph-orchestrator for stateful graphs), and workspace items expressed as ordinary Functions/Tools/Knowledge seeded by reconciliation against a baseline. The current delta moves away from that.
+
+Provide a plan or refactored sketches addressing the overrides + deep-web-mcp split + research consolidation and I will re-review. The bar is "no clear structural regression + no obvious missed dramatic simplifications." We are not there yet.

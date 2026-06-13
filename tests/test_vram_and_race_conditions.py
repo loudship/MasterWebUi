@@ -10,7 +10,7 @@ Test suites
 Suite A — Eviction decision tree
   A1  Single model below ceiling → no eviction
   A2  Single model at exactly VRAM_CEILING → eviction triggered
-  A3  Single model above VRAM_CEILING → eviction triggered, TTL=300
+  A3  Single model above VRAM_CEILING → eviction triggered via lms unload
   A4  Two models (collision risk, no ceiling breach) → LRU evicted
   A5  Two models that together breach ceiling → LRU evicted via async subprocess
   A6  Eviction cooldown prevents re-eviction within 300 s window
@@ -28,7 +28,7 @@ Suite C — LRU selection correctness
   C2  Newly-loaded model is never selected when older resident exists
 
 Suite D — Async subprocess eviction mechanics
-  D1  Successful lms call with correct args (TTL=300, model key)
+  D1  Successful lms call with correct args (unload, model key)
   D2  lms binary not found → error logged, returns False, no crash
   D3  lms subprocess timeout → process killed, returns False, no crash
   D4  lms non-zero exit code → warning logged, returns False
@@ -171,6 +171,56 @@ class TestLoadedModelExtraction:
         payload = _make_model_response(MODEL_A, MODEL_B)
         assert _extract_loaded_models(payload) == {MODEL_A, MODEL_B}
 
+    def test_api_v0_state_schema_counts_only_loaded(self):
+        """LM Studio /api/v0/models reports every downloaded model with a
+        state field; only state == "loaded" entries occupy VRAM (audit P1-3)."""
+        payload = {
+            "data": [
+                {"id": MODEL_A, "state": "loaded"},
+                {"id": MODEL_B, "state": "not-loaded"},
+            ]
+        }
+        assert _extract_loaded_models(payload) == {MODEL_A}
+
+
+class TestMeasuredVRAMCeiling:
+    """NVML-measured enforcement honours the UI reserve (audit P1-3)."""
+
+    @pytest.mark.asyncio
+    async def test_measured_usage_above_reserve_adjusted_ceiling_evicts(self):
+        arbiter = VRAMArbiterAsync()
+        total = 12 * 1024 ** 3
+        used = total - _mod.UI_VRAM_RESERVE_BYTES + 1   # inside the UI reserve
+        arbiter._measured_vram = lambda: (used, total)
+
+        with patch.object(arbiter, "_evict_model_async", new_callable=AsyncMock,
+                          return_value=True) as mock_evict:
+            await arbiter._poll_vram_state(_FakeSession(_make_model_response(MODEL_A)))
+
+        mock_evict.assert_called_once_with(MODEL_A)
+
+    @pytest.mark.asyncio
+    async def test_measured_usage_below_ceiling_does_not_evict(self):
+        arbiter = VRAMArbiterAsync()
+        total = 12 * 1024 ** 3
+        used = 6 * 1024 ** 3
+        arbiter._measured_vram = lambda: (used, total)
+
+        with patch.object(arbiter, "_evict_model_async", new_callable=AsyncMock) as mock_evict:
+            await arbiter._poll_vram_state(_FakeSession(_make_model_response(MODEL_A)))
+
+        mock_evict.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_nvml_unavailable_falls_back_to_estimate(self):
+        arbiter = VRAMArbiterAsync()
+        arbiter._nvml_unavailable = True
+        below = VRAM_CEILING // 2
+        with patch.object(_mod, "VRAM_PER_MODEL_ESTIMATE", below):
+            with patch.object(arbiter, "_evict_model_async", new_callable=AsyncMock) as mock_evict:
+                await arbiter._poll_vram_state(_FakeSession(_make_model_response(MODEL_A)))
+        mock_evict.assert_not_called()
+
 
 # ===========================================================================
 # Suite A — Eviction decision tree
@@ -180,7 +230,9 @@ class TestEvictionDecisionTree:
 
     @pytest.fixture
     def arbiter(self) -> VRAMArbiterAsync:
-        return VRAMArbiterAsync()
+        instance = VRAMArbiterAsync()
+        instance._nvml_unavailable = True   # deterministic estimate path
+        return instance
 
     # ── A1: Below ceiling → no eviction ────────────────────────────────────
 
@@ -207,13 +259,15 @@ class TestEvictionDecisionTree:
 
         mock_evict.assert_called_once_with(MODEL_A)
 
-    # ── A3: Above ceiling → eviction with TTL=300 ──────────────────────────
+    # ── A3: Above ceiling → eviction actually UNLOADS ───────────────────────
 
     @pytest.mark.asyncio
-    async def test_A3_above_ceiling_subprocess_ttl_300(self, arbiter):
+    async def test_A3_above_ceiling_subprocess_unloads(self, arbiter):
         """
         When estimated VRAM exceeds VRAM_CEILING, _evict_model_async must be
-        called and the underlying subprocess must receive --ttl 300.
+        called and the underlying subprocess must run `lms unload <model>`.
+        `lms load --ttl` would (re)load the model — the opposite of reclaiming
+        VRAM at breach time (audit P1-1).
         """
         over_ceiling = VRAM_CEILING + 1
         with patch.object(_mod, "VRAM_PER_MODEL_ESTIMATE", over_ceiling):
@@ -222,14 +276,15 @@ class TestEvictionDecisionTree:
                        return_value=proc) as mock_exec:
                 await arbiter._poll_vram_state(_FakeSession(_make_model_response(MODEL_A)))
 
-        # Verify --ttl 300 was in the subprocess args
         call_args = mock_exec.call_args
         assert call_args is not None, "create_subprocess_exec was never called"
-        positional = call_args.args
-        assert "--ttl" in positional, f"--ttl missing from exec args: {positional}"
-        ttl_idx = list(positional).index("--ttl")
-        assert positional[ttl_idx + 1] == "300", (
-            f"Expected TTL=300, got {positional[ttl_idx + 1]}"
+        positional = list(call_args.args)
+        assert positional[1] == "unload", (
+            f"Eviction must unload, not load: {positional}"
+        )
+        assert positional[2] == MODEL_A
+        assert "--ttl" not in positional, (
+            f"--ttl implies `lms load`, which does not free VRAM: {positional}"
         )
 
     # ── A4: Two models collision, no ceiling breach → LRU evicted ──────────
@@ -301,7 +356,9 @@ class TestSilentExceptionHandling:
 
     @pytest.fixture
     def arbiter(self) -> VRAMArbiterAsync:
-        return VRAMArbiterAsync()
+        instance = VRAMArbiterAsync()
+        instance._nvml_unavailable = True   # deterministic estimate path
+        return instance
 
     async def _run_poll_expecting_warning(
         self,
@@ -420,7 +477,9 @@ class TestLRUSelection:
 
     @pytest.fixture
     def arbiter(self) -> VRAMArbiterAsync:
-        return VRAMArbiterAsync()
+        instance = VRAMArbiterAsync()
+        instance._nvml_unavailable = True   # deterministic estimate path
+        return instance
 
     @pytest.mark.asyncio
     async def test_C1_oldest_resident_selected(self, arbiter):
@@ -481,10 +540,10 @@ class TestSubprocessEvictionMechanics:
     @pytest.mark.asyncio
     async def test_D1_successful_eviction_args(self, arbiter):
         """
-        _evict_model_async must call lms with: <binary> load <model_id> --ttl 300
+        _evict_model_async must call lms with: <binary> unload <model_id>
         and return True on returncode 0.
         """
-        proc = _fake_process(returncode=0, stdout=b"Model TTL set.")
+        proc = _fake_process(returncode=0, stdout=b"Model unloaded.")
         with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock,
                    return_value=proc) as mock_exec:
             result = await arbiter._evict_model_async(MODEL_A)
@@ -492,10 +551,9 @@ class TestSubprocessEvictionMechanics:
         assert result is True
         call_args = mock_exec.call_args.args
         assert call_args[0] == "lms",       f"Binary mismatch: {call_args[0]}"
-        assert call_args[1] == "load",      f"Subcommand mismatch: {call_args[1]}"
+        assert call_args[1] == "unload",    f"Subcommand mismatch: {call_args[1]}"
         assert call_args[2] == MODEL_A,     f"Model ID mismatch: {call_args[2]}"
-        assert call_args[3] == "--ttl",     f"Flag mismatch: {call_args[3]}"
-        assert call_args[4] == "300",       f"TTL value mismatch: {call_args[4]}"
+        assert "--ttl" not in call_args, f"--ttl must not be passed: {call_args}"
 
     # ── D2: lms binary not found ────────────────────────────────────────────
 

@@ -1,3 +1,4 @@
+import os
 import time
 import base64
 import io
@@ -6,10 +7,18 @@ from PIL import Image
 import mss
 
 # --- Configuration ---
-VISION_ENDPOINT = "http://localhost:1234/v1/chat/completions" # Adjust to local Vision LLM port
-MODEL_NAME = "qwen2-vl-4b-instruct" # Vision model identifier
-MAX_IMAGE_DIM = 1024 # Maximum dimension for resizing
-POLL_INTERVAL = 10 # Seconds between captures (if using polling)
+# Route through the inference gateway (host port 4322), NOT LM Studio directly:
+# direct calls bypass the model allowlist and the GPU serialization lock, so
+# vision prefill interleaved with chat token generation and caused periodic
+# stutter on every stream (audit P1-4).
+VISION_ENDPOINT = os.environ.get(
+    "VISION_ENDPOINT", "http://127.0.0.1:4322/v1/chat/completions"
+)
+MODEL_NAME = os.environ.get("VISION_MODEL", "qwen2-vl-4b-instruct")  # must be allowlisted
+MAX_IMAGE_DIM = 1024  # Maximum dimension for resizing
+# 30 s default: a 10 s cadence kept the vision model permanently resident in
+# the 12 GB VRAM budget alongside the chat model.
+POLL_INTERVAL = float(os.environ.get("VISION_POLL_INTERVAL_S", "30"))
 
 def capture_and_encode():
     """Captures the primary screen, resizes/compresses it, and encodes to base64."""
@@ -75,6 +84,10 @@ def analyze_screen(prompt="What is currently on my screen? Are there any alerts 
         
         print(f"Sending frame to Vision Model at {VISION_ENDPOINT}...")
         response = requests.post(VISION_ENDPOINT, json=payload, timeout=30)
+        if response.status_code == 503:
+            # Gateway is protecting an interactive generation — yield the GPU.
+            print("Gateway busy with an interactive generation — skipping this cycle.")
+            return
         response.raise_for_status()
         
         result = response.json()

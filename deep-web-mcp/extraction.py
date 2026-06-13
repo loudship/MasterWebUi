@@ -6,7 +6,6 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
-import os
 import socket
 import time
 import uuid
@@ -15,21 +14,16 @@ from typing import Optional
 from urllib.parse import urlparse
 
 from database import get_credentials
-from sanitizer import TextSanitizer, MAX_CHARS
+from policy import (
+    ALLOW_PUBLIC_TARGETS,
+    ALLOWED_TARGET_HOSTS,
+    MAX_CHARS,
+    PAGE_TIMEOUT_MS,
+    TASK_REGISTRY_TTL_S,
+)
+from sanitizer import TextSanitizer
 
 logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# Environment configuration
-# ---------------------------------------------------------------------------
-ALLOW_PUBLIC_TARGETS: bool = os.getenv("ALLOW_PUBLIC_TARGETS", "false").lower() == "true"
-ALLOWED_TARGET_HOSTS = {
-    host.strip().lower()
-    for host in os.environ.get("ALLOWED_TARGET_HOSTS", "crawl4ai,searxng,browserless").split(",")
-    if host.strip()
-}
-PAGE_TIMEOUT_MS: int = int(os.getenv("PAGE_TIMEOUT_MS", "45000"))
-TASK_REGISTRY_TTL_S: float = float(os.getenv("TASK_REGISTRY_TTL_S", "600"))
 
 _sanitizer = TextSanitizer(max_chars=MAX_CHARS)
 
