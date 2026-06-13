@@ -1,24 +1,25 @@
-FROM node:22-alpine3.20 AS frontend
-WORKDIR /src
-COPY open-webui-0.9.6/package.json open-webui-0.9.6/package-lock.json ./
-RUN npm ci --force
-COPY open-webui-0.9.6/ ./
-COPY workspace/open-webui-overrides/src/ ./src/
-COPY workspace/open-webui-overrides/patch_frontend.mjs /tmp/patch_frontend.mjs
-RUN node /tmp/patch_frontend.mjs
-RUN npm run build
+# Hardened Open WebUI image.
+#
+# Previously this Dockerfile applied string-anchor patches to Svelte source
+# files (patch_frontend.mjs) and to open_webui/main.py (patch_main.py) at
+# build time.  Both patch files are now retired no-ops (see comments inside
+# them).  The custom routers (workspace_catalog, workspace_research) run as
+# separate services — not injected into this image.
+#
+# What this image does:
+#   1. Installs gVisor (runsc) for the code-execution sandbox (blueprint §5.1).
+#   2. Extends the upstream open-webui:0.9.6 image with no source mutations.
 
 FROM open-webui:0.9.6
-COPY --from=frontend /src/build /app/build
-COPY workspace/open-webui-overrides/backend/open_webui/routers/workspace_catalog.py /app/backend/open_webui/routers/workspace_catalog.py
-COPY workspace/open-webui-overrides/backend/open_webui/routers/workspace_research.py /app/backend/open_webui/routers/workspace_research.py
-COPY workspace/open-webui-overrides/backend/patch_main.py /tmp/patch_main.py
+
 RUN set -eu; \
     mkdir -p /tmp/gvisor; \
-    curl -fsSLo /tmp/gvisor/runsc https://storage.googleapis.com/gvisor/releases/release/latest/x86_64/runsc; \
-    curl -fsSLo /tmp/gvisor/runsc.sha512 https://storage.googleapis.com/gvisor/releases/release/latest/x86_64/runsc.sha512; \
+    curl -fsSLo /tmp/gvisor/runsc \
+        https://storage.googleapis.com/gvisor/releases/release/latest/x86_64/runsc; \
+    curl -fsSLo /tmp/gvisor/runsc.sha512 \
+        https://storage.googleapis.com/gvisor/releases/release/latest/x86_64/runsc.sha512; \
     cd /tmp/gvisor; \
     sha512sum -c runsc.sha512; \
     chmod 0755 runsc; \
+    mv runsc /usr/local/bin/runsc; \
     rm runsc.sha512
-RUN python /tmp/patch_main.py && rm /tmp/patch_main.py

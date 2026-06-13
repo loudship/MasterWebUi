@@ -253,6 +253,13 @@ def tool_form(
     manifest = copy.deepcopy(meta.get("manifest") or {})
     if catalog_meta:
         manifest["catalog"] = catalog_meta
+
+    # Embed risk-level as a native OWUI tag so the workspace list shows it
+    # without any frontend patching.
+    risk = (catalog_meta or {}).get("risk", "read-only")
+    existing_tags = [t for t in (meta.get("tags") or []) if not str(t).startswith("risk:")]
+    tags = existing_tags + [f"risk:{risk}"]
+
     return {
         "id": tool["id"],
         "name": name or tool["name"],
@@ -260,8 +267,26 @@ def tool_form(
         "meta": {
             "description": meta.get("description") or "",
             "manifest": manifest,
+            "tags": tags,
         },
         "access_grants": tool.get("access_grants") or [],
+    }
+
+
+def function_form(item_id: str, desired: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": item_id,
+        "name": desired["name"],
+        "content": (ROOT / desired["source"]).read_text(encoding="utf-8"),
+        "meta": {
+            "description": desired["name"],
+            "catalog": {
+                "risk": desired.get("risk", "read-only"),
+                "dependency_health": "healthy",
+                "validation_status": "passed",
+                "details": "CPU-only native Filter with bounded local processing.",
+            },
+        },
     }
 
 
@@ -412,6 +437,7 @@ def expected_actions(snapshot: dict[str, Any], baseline: dict[str, Any]) -> list
     actions = []
     models = {item["id"]: item for item in snapshot["models"]}
     tools = {item["id"]: item for item in snapshot["tools"]}
+    functions = {item["id"]: item for item in snapshot["functions"]}
     for item_id, desired in baseline["models"].items():
         current = models.get(item_id)
         comparison = current or {**models.get("qwen35", {}), "id": item_id}
@@ -443,7 +469,18 @@ def expected_actions(snapshot: dict[str, Any], baseline: dict[str, Any]) -> list
         if needs_update:
             actions.append(f"update tool {item_id}")
     actions.extend(f"archive tool {item_id}" for item_id in baseline["archive_tools"] if item_id in tools)
-    current_functions = {item["id"] for item in snapshot["functions"]}
+    for item_id, desired in baseline.get("functions", {}).items():
+        current = functions.get(item_id)
+        form = function_form(item_id, desired)
+        if (
+            not current
+            or current.get("name") != form["name"]
+            or current.get("content") != form["content"]
+            or current.get("is_active") != desired.get("active", False)
+            or current.get("is_global") != desired.get("global", False)
+        ):
+            actions.append(f"{'update' if current else 'create'} function {item_id}")
+    current_functions = set(functions)
     actions.extend(f"archive function {item_id}" for item_id in baseline["archive_functions"] if item_id in current_functions)
     current_skills = {item["id"] for item in snapshot["skills"]}
     actions.extend(f"create skill {item['id']}" for item in SKILLS if item["id"] not in current_skills)
@@ -471,6 +508,20 @@ def upsert_tool(api: Api, current: dict[str, Any] | None, form: dict[str, Any]) 
         api.request("POST", f"/api/v1/tools/id/{urllib.parse.quote(form['id'])}/update", form)
     else:
         api.request("POST", "/api/v1/tools/create", form)
+
+
+def upsert_function(api: Api, current: dict[str, Any] | None, form: dict[str, Any]) -> dict[str, Any]:
+    if current:
+        return api.request("POST", f"/api/v1/functions/id/{urllib.parse.quote(form['id'])}/update", form)
+    return api.request("POST", "/api/v1/functions/create", form)
+
+
+def reconcile_function_state(api: Api, function: dict[str, Any], desired: dict[str, Any]) -> dict[str, Any]:
+    if function.get("is_active") != desired.get("active", False):
+        function = api.request("POST", f"/api/v1/functions/id/{urllib.parse.quote(function['id'])}/toggle")
+    if function.get("is_global") != desired.get("global", False):
+        function = api.request("POST", f"/api/v1/functions/id/{urllib.parse.quote(function['id'])}/toggle/global")
+    return function
 
 
 def apply(api: Api, baseline: dict[str, Any], backup: Path | None) -> Path:
@@ -518,6 +569,11 @@ def apply(api: Api, baseline: dict[str, Any], backup: Path | None) -> Path:
     for item_id in baseline["archive_functions"]:
         if any(item["id"] == item_id for item in before["functions"]):
             api.request("DELETE", f"/api/v1/functions/id/{urllib.parse.quote(item_id)}/delete")
+
+    functions = {item["id"]: item for item in api.request("GET", "/api/v1/functions/export")}
+    for item_id, desired in baseline.get("functions", {}).items():
+        function = upsert_function(api, functions.get(item_id), function_form(item_id, desired))
+        reconcile_function_state(api, function, desired)
 
     current_skills = {item["id"]: item for item in before["skills"]}
     for desired in SKILLS:

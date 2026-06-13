@@ -4,5 +4,5 @@
 #   services/workspace-catalog/  (catalog status API via public OWUI endpoints)
 #   workspace/catalog-tools/web_research.py  (Open WebUI Tool, thin caller)
 #
-# The Dockerfile no longer copies or executes this file.
-# Kept as a marker so the path reference in the old Dockerfile comment is traceable.
+# Nothing to patch here.  This file is kept as a marker so the Dockerfile
+# reference does not break existing CI caches during the transition.
