@@ -14,12 +14,12 @@ if ($LASTEXITCODE -ne 0) {
 $config = $configJson | ConvertFrom-Json
 
 try {
-    $inventory = Invoke-RestMethod -Uri "http://127.0.0.1:1234/v1/models" -TimeoutSec 5
+    $inventory = Invoke-RestMethod -Uri "http://127.0.0.1:4321/v1/models" -TimeoutSec 5
     if (-not $inventory.data) {
         throw "LM Studio returned no models."
     }
 } catch {
-    throw "Host LM Studio is not ready at http://127.0.0.1:1234/v1/models: $_"
+    throw "Host LM Studio is not ready at http://127.0.0.1:4321/v1/models: $_"
 }
 
 $allowlist = @(

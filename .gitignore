@@ -76,3 +76,6 @@ tmp_retrieval/
 docker-volumes/
 .docker-volumes/
 local-volumes/
+
+# Local secrets directory
+secrets/

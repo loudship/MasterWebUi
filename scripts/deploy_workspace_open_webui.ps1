@@ -43,6 +43,9 @@ try {
         --restart unless-stopped `
         --network open-webui-master_llm-net `
         --cgroupns private `
+        --cap-add SYS_ADMIN `
+        --security-opt seccomp=unconfined `
+        --security-opt no-new-privileges:true `
         -p 127.0.0.1:3000:8080 `
         -v open-webui-live-data:/app/backend/data `
         -v /sys/fs/cgroup:/sys/fs/cgroup:rw `

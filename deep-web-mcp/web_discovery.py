@@ -33,7 +33,8 @@ ALLOWED_TARGET_HOSTS = {
 DEFAULT_SEARCH_RESULTS: int = int(os.getenv("WEB_DISCOVERY_MAX_RESULTS", "5"))
 DEFAULT_MAX_TOKENS: int = int(os.getenv("WEB_DISCOVERY_MAX_TOKENS", "1200"))
 DEFAULT_MAX_CHARS: int = int(os.getenv("WEB_DISCOVERY_MAX_CHARS", "20000"))
-SEARCH_TIMEOUT_S: float = float(os.getenv("WEB_DISCOVERY_SEARCH_TIMEOUT_S", "20"))
+# Local SearXNG on the docker network: 5 s is generous - fail fast (audit P2-5).
+SEARCH_TIMEOUT_S: float = float(os.getenv("WEB_DISCOVERY_SEARCH_TIMEOUT_S", "5"))
 PROBE_TIMEOUT_S: float = float(os.getenv("WEB_DISCOVERY_PROBE_TIMEOUT_S", "8"))
 PAGE_TIMEOUT_MS: int = int(os.getenv("WEB_DISCOVERY_PAGE_TIMEOUT_MS", "15000"))
 SCRIPT_TIMEOUT_MS: int = int(os.getenv("WEB_DISCOVERY_SCRIPT_TIMEOUT_MS", "10000"))

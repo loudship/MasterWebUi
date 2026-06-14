@@ -108,16 +108,26 @@ class HITLBroker:
     # ------------------------------------------------------------------
 
     async def connect(self) -> None:
-        """Open the Redis connection pool.  Call once at app startup."""
+        """Open the Redis connection pool and VERIFY it with a PING.
+
+        redis.asyncio.from_url() is lazy — it never touches the network, so
+        without the ping `is_connected` reported True with Redis down and the
+        orchestrator's startup gate was decorative (audit P2-11).
+        """
         try:
-            self._client = aioredis.from_url(
+            # No global socket_timeout: it would abort BLPOP reads after 5 s,
+            # silently denying every HITL authorization long before the
+            # intended approval window. BLPOP carries its own server-side
+            # timeout; connection setup keeps a bound.
+            client = aioredis.from_url(
                 self._redis_url,
                 decode_responses=False,   # raw bytes for token safety
                 socket_connect_timeout=5,
-                socket_timeout=5,
                 retry_on_timeout=True,
             )
-            logger.info("[HITL] Redis queue client configured: %s", self._redis_url)
+            await client.ping()
+            self._client = client
+            logger.info("[HITL] Redis queue client connected and verified: %s", self._redis_url)
         except Exception as exc:
             logger.error("[HITL] Redis connection failed: %s", exc)
             self._client = None

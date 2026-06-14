@@ -54,7 +54,9 @@ def test_orchestrator_uses_alias_only_and_three_loop_contract():
     assert "MemorySaver" not in source
     assert "AsyncPostgresSaver" in source
     assert 'collection_name="' not in source
-    assert source.count("collection_name=QDRANT_NARRATIVE_ALIAS") == 2
+    # Alias-only policy: every Qdrant data call must target the alias
+    # (query_points + scroll fallback + upsert), never a named collection.
+    assert source.count("collection_name=QDRANT_NARRATIVE_ALIAS") == 3
     assert "fail_safe_termination" in source
 
 

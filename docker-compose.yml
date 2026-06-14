@@ -17,13 +17,15 @@ x-airgap-dns: &airgap-dns
 
 services:
   postgres:
-    image: postgres@sha256:0027bef26712baaee437a4ea48fdf3d2d2e2bc5f0d81615374408ca320f3c7e3
+    image: postgres@sha256:df7bca0066e6f60cc3dd32faa70caddec20e2c22b58932f79498e5704b23854a
     pull_policy: never
     container_name: hardened-postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in the operator environment}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the operator environment}
       POSTGRES_DB: postgres
+      # Consumed by infra/postgres/init/002-create-telemetry-role.sh on first init.
+      TELEMETRY_RO_PASSWORD: ${TELEMETRY_RO_PASSWORD:?Set TELEMETRY_RO_PASSWORD in the operator environment}
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
@@ -137,7 +139,7 @@ services:
     container_name: inference-gateway
     environment:
       <<: *core-environment
-      UPSTREAM_BASE_URL: http://host.docker.internal:1234
+      UPSTREAM_BASE_URL: http://host.docker.internal:4321
       POSTGRES_OPS_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/ops
       MODEL_ALLOWLIST: ${MODEL_ALLOWLIST:?Set MODEL_ALLOWLIST to one or more approved LM Studio model IDs}
       UPSTREAM_TIMEOUT_S: ${UPSTREAM_TIMEOUT_S:-180}
@@ -146,7 +148,7 @@ services:
     depends_on:
       <<: [*postgres-health-dependency, *qdrant-health-dependency]
     ports:
-      - 127.0.0.1:4321:4321
+      - 127.0.0.1:4322:4321
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4321/health', timeout=4)"]
       interval: 10s
@@ -197,13 +199,17 @@ services:
     restart: unless-stopped
 
   pipelines:
-    image: ghcr.io/open-webui/pipelines@sha256:b48e9bc338ce2be0acfbeff01810db72408a12f07739f9e3879c1f2b00952d6e
+    build:
+      context: .
+      dockerfile: services/pipelines/Dockerfile
+    image: pipelines:local
     pull_policy: never
     container_name: hardened-pipelines
     environment:
       <<: *core-environment
       PIPELINES_API_KEY: ${PIPELINES_API_KEY:?Set PIPELINES_API_KEY in the operator environment}
       LANGGRAPH_URL: http://langgraph-orchestrator:8100
+      INFERENCE_GATEWAY_URL: http://inference-gateway:4321
     volumes:
       - ./pipelines/langgraph_router.py:/app/pipelines/langgraph_router.py:ro
     depends_on:
@@ -211,10 +217,14 @@ services:
         condition: service_healthy
       qdrant:
         condition: service_healthy
+      inference-gateway:
+        condition: service_healthy
       langgraph-orchestrator:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9099/ >/dev/null || exit 1"]
+      # Assert the OpenAI-compatible contract Open WebUI depends on, not just
+      # process liveness: /v1/models must answer with at least one model.
+      test: ["CMD", "python", "-c", "import json,os,urllib.request; req=urllib.request.Request('http://127.0.0.1:9099/v1/models', headers={'Authorization': 'Bearer ' + os.environ['PIPELINES_API_KEY']}); body=json.load(urllib.request.urlopen(req, timeout=4)); assert body.get('data'), 'no pipeline models registered'"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -248,7 +258,9 @@ services:
       SEARXNG_LANGUAGE: "en"
       ENABLE_PERSISTENT_CONFIG: "true"
       ENABLE_API_KEYS: "true"
-      ENABLE_WEBSOCKET_SUPPORT: "false"
+      # WebSocket transport for socket.io: long-polling degraded every tool
+      # status event under load (audit P3-1). All binds are 127.0.0.1-only.
+      ENABLE_WEBSOCKET_SUPPORT: "true"
       ENABLE_STAR_SESSIONS_MIDDLEWARE: "false"
       ENABLE_OTEL: "false"
       ENABLE_OTEL_TRACES: "false"
@@ -276,6 +288,12 @@ services:
       - 127.0.0.1:3000:8080
     volumes:
       - open-webui-data:/app/backend/data
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - seccomp=unconfined
+      - no-new-privileges:true
     networks:
       - llm-net
     dns: *airgap-dns
@@ -385,6 +403,37 @@ services:
       start_period: 20s
     restart: unless-stopped
 
+  workspace-catalog:
+    profiles: [offline-tools]
+    build:
+      context: .
+      dockerfile: services/workspace-catalog/Dockerfile
+    image: workspace-catalog:local
+    pull_policy: never
+    container_name: workspace-catalog
+    environment:
+      <<: *core-environment
+      OWUI_BASE_URL: http://open-webui:8080
+      OWUI_ADMIN_TOKEN: ${OPEN_WEBUI_API_KEY:-}
+      PORT: "9080"
+    depends_on:
+      open-webui:
+        condition: service_healthy
+    ports:
+      - 127.0.0.1:9080:9080
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9080/health', timeout=4)"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    networks:
+      - llm-net
+    dns: *airgap-dns
+    mem_limit: 128m
+    cpus: "0.25"
+    restart: unless-stopped
+
   monitor-daemon:
     profiles: [offline-tools]
     build:
@@ -428,6 +477,50 @@ services:
     networks:
       - llm-net
     dns: *airgap-dns
+    restart: unless-stopped
+
+  telemetry-gateway:
+    profiles: [offline-tools]
+    build:
+      context: .
+      dockerfile: services/telemetry-gateway/Dockerfile
+    image: telemetry-gateway:local
+    pull_policy: never
+    container_name: telemetry-gateway
+    environment:
+      <<: *core-environment
+      POSTGRES_OPS_URL: postgresql://telemetry_ro:${TELEMETRY_RO_PASSWORD:?Set TELEMETRY_RO_PASSWORD in the operator environment}@postgres:5432/ops
+      OPEN_WEBUI_URL: http://open-webui:8080
+      OPEN_WEBUI_API_KEY: ${OPEN_WEBUI_API_KEY:-}
+      PYTHONUNBUFFERED: "1"
+    secrets:
+      - telemetry_token
+    depends_on:
+      postgres:
+        condition: service_healthy
+      open-webui:
+        condition: service_healthy
+    ports:
+      - 127.0.0.1:19200:9200
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9200/health', timeout=4)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    networks:
+      - llm-net
+    dns: *airgap-dns
+    mem_limit: 256m
+    cpus: "0.5"
+    pids_limit: 32
+    read_only: true
+    tmpfs:
+      - /tmp:size=8m,noexec,nosuid
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
 
   config-drift-monitor:
@@ -485,6 +578,7 @@ services:
       QDRANT_URL: http://qdrant:6333
       QDRANT_NARRATIVE_ALIAS: narrative_active
       QDRANT_NARRATIVE_BOOTSTRAP_COLLECTION: primary_narrative
+      WEBUI_SECRET_KEY: ${WEBUI_SECRET_KEY:?Set WEBUI_SECRET_KEY}
     volumes:
       - ./data:/migration-data:ro
       - ./backups:/backups
@@ -529,3 +623,7 @@ volumes:
     name: monitor-daemon-data
   redis-ui-data:
     name: redis-ui-data
+
+secrets:
+  telemetry_token:
+    file: ./secrets/telemetry_token.txt

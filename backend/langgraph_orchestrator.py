@@ -52,6 +52,17 @@ _checkpointer: AsyncPostgresSaver | None = None
 _checkpointer_context = None
 _ops_pool: asyncpg.Pool | None = None
 
+# Nodes that emit node_end SSE frames to the pipeline consumer.
+# Keeping this as a named constant avoids the inline set literal being
+# re-evaluated on every streamed event and makes the stream contract explicit.
+_STREAM_NODES: frozenset[str] = frozenset({
+    "Semantic_Router_Node",
+    "Lorekeeper_Node",
+    "Simulator",
+    "Continuity_Verifier",
+    "Factual_Shortcircuit_Node",
+})
+
 
 class NarrativeState(TypedDict):
     message_array: Annotated[list[str], operator.add]
@@ -77,7 +88,17 @@ def _sha8(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:8]
 
 
+# Resolved-model cache: every graph node used to pay a /v1/models round-trip
+# per LLM call (audit P2-9). 30 s of staleness is harmless for a single-GPU
+# allowlisted runtime.
+MODEL_CACHE_TTL_S = float(os.environ.get("MODEL_CACHE_TTL_S", "30"))
+_model_cache: dict = {"id": None, "expires": 0.0}
+
+
 async def _resolve_model(session: aiohttp.ClientSession, trace_id: str) -> str:
+    now = time.monotonic()
+    if _model_cache["id"] is not None and now < _model_cache["expires"]:
+        return _model_cache["id"]
     try:
         async with session.get(
             f"{INFERENCE_GATEWAY_URL}/v1/models",
@@ -86,10 +107,48 @@ async def _resolve_model(session: aiohttp.ClientSession, trace_id: str) -> str:
         ) as response:
             data = await response.json(content_type=None)
             if response.status == 200 and data.get("data"):
-                return data["data"][0]["id"]
+                model_id = data["data"][0]["id"]
+                _model_cache.update(id=model_id, expires=time.monotonic() + MODEL_CACHE_TTL_S)
+                return model_id
     except (aiohttp.ClientError, asyncio.TimeoutError, OSError, ValueError):
         logger.exception("[GATEWAY] Model discovery failed.")
     return "local-model"
+
+
+EMBEDDING_DIM = 768
+
+
+async def _embed_text(session: aiohttp.ClientSession, text: str, trace_id: str) -> Optional[list[float]]:
+    """Embed text via the gateway. Returns None when embeddings are unavailable.
+
+    The previous implementation queried and upserted with all-zero vectors —
+    cosine distance against a zero vector is undefined, so 'semantic'
+    retrieval was a random-row fetch (audit P2-10).
+    """
+    model = await _resolve_model(session, trace_id)
+    try:
+        async with session.post(
+            f"{INFERENCE_GATEWAY_URL}/v1/embeddings",
+            headers={"X-Trace-Id": trace_id},
+            json={"model": model, "input": text[:8192]},
+            timeout=aiohttp.ClientTimeout(total=30),
+        ) as response:
+            data = await response.json(content_type=None)
+            if response.status != 200:
+                logger.warning("[EMBED] Gateway returned HTTP %s", response.status)
+                return None
+            vector = data["data"][0]["embedding"]
+            if len(vector) != EMBEDDING_DIM:
+                logger.warning(
+                    "[EMBED] Vector dimension %d != collection dimension %d — "
+                    "skipping semantic retrieval for this call.",
+                    len(vector), EMBEDDING_DIM,
+                )
+                return None
+            return [float(value) for value in vector]
+    except (aiohttp.ClientError, asyncio.TimeoutError, OSError, KeyError, IndexError, TypeError, ValueError) as exc:
+        logger.warning("[EMBED] Embedding unavailable: %s", exc)
+        return None
 
 
 async def _llm_call(
@@ -233,15 +292,31 @@ async def Lorekeeper_Node(state: NarrativeState) -> dict:
             ]
         )
     try:
-        response = await qdrant_client.query_points(
-            collection_name=QDRANT_NARRATIVE_ALIAS,
-            query=[0.0] * 768,
-            query_filter=search_filter,
-            limit=5,
-            with_payload=True,
-        )
-        if response.points:
-            arc = response.points[0].payload.get("consensus_proposal", arc)
+        async with aiohttp.ClientSession(trust_env=False) as session:
+            query_vector = await _embed_text(
+                session, state.get("input", ""), state.get("trace_id", "")
+            )
+        if query_vector is not None:
+            response = await qdrant_client.query_points(
+                collection_name=QDRANT_NARRATIVE_ALIAS,
+                query=query_vector,
+                query_filter=search_filter,
+                limit=5,
+                with_payload=True,
+            )
+            if response.points:
+                arc = response.points[0].payload.get("consensus_proposal", arc)
+        else:
+            # No embedding available → fall back to scrolling the newest
+            # committed consensus instead of querying with a degenerate vector.
+            scrolled, _offset = await qdrant_client.scroll(
+                collection_name=QDRANT_NARRATIVE_ALIAS,
+                scroll_filter=search_filter,
+                limit=1,
+                with_payload=True,
+            )
+            if scrolled:
+                arc = scrolled[0].payload.get("consensus_proposal", arc)
     except Exception as exc:
         logger.warning("[LOREKEEPER] Alias retrieval fallback: %s", exc)
 
@@ -339,9 +414,6 @@ async def Continuity_Verifier(state: NarrativeState) -> dict:
         if "contradiction" in judgment.lower():
             contradiction_reason = judgment.strip()
 
-    if "contradiction" in state.get("input", "").lower():
-        contradiction_reason = contradiction_reason or "Contradiction requested in user input."
-
     if contradiction_reason:
         remaining = max(0, state.get("remaining_loops", TOTAL_ALLOWED_LOOPS) - 1)
         retry_count = TOTAL_ALLOWED_LOOPS - remaining
@@ -358,21 +430,29 @@ async def Continuity_Verifier(state: NarrativeState) -> dict:
         }
 
     try:
-        await qdrant_client.upsert(
-            collection_name=QDRANT_NARRATIVE_ALIAS,
-            points=[
-                models.PointStruct(
-                    id=str(uuid.uuid4()),
-                    vector=[0.0] * 768,
-                    payload={
-                        "consensus_proposal": proposal,
-                        "timestamp": time.time(),
-                        "attempt": attempt,
-                        "content_type": state.get("intent", "narrative"),
-                    },
-                )
-            ],
-        )
+        async with aiohttp.ClientSession(trust_env=False) as session:
+            proposal_vector = await _embed_text(session, proposal, state.get("trace_id", ""))
+        if proposal_vector is None:
+            logger.warning(
+                "[CONTINUITY] Embeddings unavailable — consensus committed to graph "
+                "state without a semantic index entry."
+            )
+        else:
+            await qdrant_client.upsert(
+                collection_name=QDRANT_NARRATIVE_ALIAS,
+                points=[
+                    models.PointStruct(
+                        id=str(uuid.uuid4()),
+                        vector=proposal_vector,
+                        payload={
+                            "consensus_proposal": proposal,
+                            "timestamp": time.time(),
+                            "attempt": attempt,
+                            "content_type": state.get("intent", "narrative"),
+                        },
+                    )
+                ],
+            )
     except Exception as exc:
         logger.warning("[CONTINUITY] Alias upsert failed without invalidating consensus: %s", exc)
 
@@ -611,17 +691,44 @@ async def invoke_graph(req: InvokeRequest):
 
 @app.post("/stream")
 async def stream_graph(req: InvokeRequest):
-    async def event_generator() -> AsyncIterator[str]:
-        if _graph is None:
+    """Stream graph events as SSE.
+
+    The graph runs in a real asyncio.Task registered in _active_tasks so
+    /interrupt can cancel streamed runs — previously only /invoke runs were
+    interruptible while the pipeline drives all normal traffic through here
+    (audit P2-8). A bounded queue decouples graph progress from a lagging
+    SSE consumer.
+    """
+    if _graph is None:
+        async def uninitialized() -> AsyncIterator[str]:
             yield _sse("error", {"detail": "Graph is not initialized."})
-            return
-        thread_id = req.thread_id or str(uuid.uuid4())
-        trace_id = req.trace_id or str(uuid.uuid4())
-        initial_state = _build_initial_state(
-            req.input, thread_id=thread_id, trace_id=trace_id, messages=req.messages
-        )
-        config = {"configurable": {"thread_id": thread_id}}
-        yield _sse("graph_start", {"thread_id": thread_id, "trace_id": trace_id})
+
+        return StreamingResponse(uninitialized(), media_type="text/event-stream")
+
+    thread_id = req.thread_id or str(uuid.uuid4())
+    trace_id = req.trace_id or str(uuid.uuid4())
+    initial_state = _build_initial_state(
+        req.input, thread_id=thread_id, trace_id=trace_id, messages=req.messages
+    )
+    config = {"configurable": {"thread_id": thread_id}}
+    queue: asyncio.Queue[Optional[str]] = asyncio.Queue(maxsize=256)
+
+    def _offer(frame: Optional[str]) -> None:
+        try:
+            queue.put_nowait(frame)
+        except asyncio.QueueFull:
+            if frame is None:
+                # The end-of-stream sentinel must always land or the SSE
+                # generator waits forever: make room and retry.
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+                queue.put_nowait(frame)
+            else:
+                logger.warning("[STREAM] Event queue full — dropping frame for %s", thread_id)
+
+    async def run_graph() -> None:
         try:
             async for event in _graph.astream_events(initial_state, config=config, version="v2"):
                 if event.get("event") != "on_chain_end":
@@ -629,22 +736,16 @@ async def stream_graph(req: InvokeRequest):
                 node = event.get("name", "")
                 output = event.get("data", {}).get("output", {}) or {}
                 if node == "fail_safe_termination":
-                    yield _sse(
+                    await queue.put(_sse(
                         "fail_safe_termination",
                         {
                             "termination_reason": output.get("termination_reason", ""),
                             "message_array": output.get("message_array", []),
                             "execution_log": output.get("execution_log", []),
                         },
-                    )
-                elif node in {
-                    "Semantic_Router_Node",
-                    "Lorekeeper_Node",
-                    "Simulator",
-                    "Continuity_Verifier",
-                    "Factual_Shortcircuit_Node",
-                }:
-                    yield _sse(
+                    ))
+                elif node in _STREAM_NODES:
+                    await queue.put(_sse(
                         "node_end",
                         {
                             "node": node,
@@ -652,15 +753,35 @@ async def stream_graph(req: InvokeRequest):
                             "retry_count": output.get("retry_count"),
                             "execution_log": output.get("execution_log", []),
                         },
-                    )
+                    ))
                 for message in output.get("message_array", []):
-                    yield _sse("graph_output", {"message": message})
-            yield _sse("graph_end", {"thread_id": thread_id, "trace_id": trace_id})
+                    await queue.put(_sse("graph_output", {"message": message}))
+            await queue.put(_sse("graph_end", {"thread_id": thread_id, "trace_id": trace_id}))
         except asyncio.CancelledError:
-            yield _sse("graph_end", {"thread_id": thread_id, "reason": "interrupted"})
+            _offer(_sse("graph_end", {"thread_id": thread_id, "reason": "interrupted"}))
+            raise
         except Exception as exc:
             logger.exception("[STREAM] Unhandled graph stream error.")
-            yield _sse("error", {"detail": str(exc)})
+            _offer(_sse("error", {"detail": str(exc)}))
+        finally:
+            _offer(None)
+
+    task = asyncio.create_task(run_graph())
+    _active_tasks[thread_id] = task
+
+    async def event_generator() -> AsyncIterator[str]:
+        yield _sse("graph_start", {"thread_id": thread_id, "trace_id": trace_id})
+        try:
+            while True:
+                frame = await queue.get()
+                if frame is None:
+                    break
+                yield frame
+        finally:
+            if _active_tasks.get(thread_id) is task:
+                _active_tasks.pop(thread_id, None)
+            if not task.done():
+                task.cancel()
 
     return StreamingResponse(
         event_generator(),

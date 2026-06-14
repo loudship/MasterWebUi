@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import os
 from typing import Any
 
 from open_webui.utils.plugin import load_tool_module_by_id
@@ -13,7 +14,7 @@ from open_webui.utils.plugin import load_tool_module_by_id
 PROBES: dict[str, tuple[str, dict[str, Any]]] = {
     "run_code_py": ("run_python_code", {"python_code": "print(2 + 2)"}),
     "deep_web_ecosystem_tools": ("search_database", {"target_database": "web", "search_query": "Open WebUI"}),
-    "calendar_ecosystem_tools": ("get_events_today", {}),
+    "calendar_ecosystem_tools": ("get_events_today", {"__user__": {"id": os.getenv("CALENDAR_TEST_USER", "workspace-audit")}}),
     "home_assit": ("query_entities", {"mode": "domain", "domain": "light"}),
     "youtube_transcript_provider": ("get_youtube_transcript", {"url": "invalid"}),
     "swarm_controls": ("get_swarm_status", {}),

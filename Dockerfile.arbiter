@@ -42,16 +42,18 @@ RUN pip install --no-cache-dir -r requirements.arbiter.txt
 # ---------------------------------------------------------------------------
 # Application source
 # ---------------------------------------------------------------------------
-COPY vram_arbiter_daemon.py ./vram_arbiter_daemon.py
+COPY ops/vram_arbiter_daemon.py ./vram_arbiter_daemon.py
 
 # ---------------------------------------------------------------------------
 # Runtime configuration
 # ---------------------------------------------------------------------------
 
 # Default environment variables (all overridable at docker run / compose)
+# NOTE: containerized runs can only OBSERVE — `lms` eviction requires the
+# Windows host CLI. Run vram_arbiter_daemon.py host-side for enforcement.
 ENV LM_STUDIO_API="http://host.docker.internal:4321/api/v1/models" \
     VRAM_CEILING="12240537395" \
-    VRAM_PER_MODEL_ESTIMATE_GB="5" \
+    VRAM_PER_MODEL_ESTIMATE_GB="5.7" \
     PYTHONUNBUFFERED="1" \
     PYTHONDONTWRITEBYTECODE="1"
 

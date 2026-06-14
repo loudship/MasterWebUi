@@ -16,13 +16,35 @@ def load_reconciler():
 def test_baseline_has_exact_target_catalog():
     baseline = json.loads((ROOT / "workspace" / "catalog-baseline.yaml").read_text(encoding="utf-8"))
     assert set(baseline["models"]) == {"qwen35", "qwen257b", "moyclark", "-data-analyst--developer", "web-search"}
-    assert len(baseline["tools"]) == 10
+    # 12 tools: original 10 + request_user_clarification + docling_ingestion
+    assert len(baseline["tools"]) == 12
+    assert "request_user_clarification" in baseline["tools"]
+    assert "docling_ingestion" in baseline["tools"]
+    # 5 functions: original 3 + agentic_react_loop + document_ingestion_router
+    assert set(baseline["functions"]) == {
+        "dynamic_intent_router",
+        "local_project_context_injector",
+        "brutalist_artifact_formatter",
+        "agentic_react_loop",
+        "document_ingestion_router",
+    }
     assert baseline["archive_tools"] == []
     assert set(baseline["archive_functions"]) == {"comfy_mcp_pipeline", "langfuse_filter"}
     assert baseline["models"]["qwen35"]["builtin_tools"] == ["web_search", "code_interpreter"]
     assert baseline["models"]["-data-analyst--developer"]["builtin_tools"] == ["code_interpreter"]
     assert baseline["models"]["moyclark"]["knowledge_context"] == "full"
-    assert baseline["models"]["web-search"]["tool_ids"] == ["web_research"]
+    # web-search now has three tool IDs: base research + clarification intercept + docling ingestion
+    assert "web_research" in baseline["models"]["web-search"]["tool_ids"]
+    assert "request_user_clarification" in baseline["models"]["web-search"]["tool_ids"]
+    assert "docling_ingestion" in baseline["models"]["web-search"]["tool_ids"]
+    assert baseline["functions"]["dynamic_intent_router"]["global"] is True
+    assert baseline["functions"]["local_project_context_injector"]["global"] is True
+    assert baseline["functions"]["brutalist_artifact_formatter"]["global"] is False
+    # agentic_react_loop is model-scoped (not global) to avoid polluting the global filter chain
+    assert baseline["functions"]["agentic_react_loop"]["global"] is False
+    # document_ingestion_router is also model-scoped at priority 40
+    assert baseline["functions"]["document_ingestion_router"]["global"] is False
+    assert baseline["functions"]["document_ingestion_router"]["priority"] == 40
 
 
 def test_desired_models_use_a_narrow_builtin_tool_allowlist():
@@ -111,19 +133,20 @@ def test_replacement_tools_are_read_only_or_confirmation_gated():
     swarm = (ROOT / "workspace" / "catalog-tools" / "orchestrator_status.py").read_text(encoding="utf-8")
     deep = (ROOT / "workspace" / "catalog-tools" / "deep_web_readonly.py").read_text(encoding="utf-8")
     advanced = (ROOT / "workspace" / "catalog-tools" / "deep_web_advanced.py").read_text(encoding="utf-8")
+    calendar = (ROOT / "workspace" / "catalog-tools" / "calendar_readonly.py").read_text(encoding="utf-8")
     for forbidden in ("subprocess", "start_orchestrator", "evict_vram", "invoke_swarm"):
         assert forbidden not in swarm
     assert '"session_required": False' in deep
     assert '"js_script": ""' in deep
     assert "CONFIRM_ADVANCED_DEEP_WEB" in advanced
+    assert "streamablehttp_client" in calendar
+    assert "sse_client" not in calendar
+    assert "create_event" not in calendar
 
 
 def test_ui_override_contracts_are_present():
     override = ROOT / "workspace" / "open-webui-overrides"
-    patch = (override / "patch_frontend.mjs").read_text(encoding="utf-8")
-    router = (override / "backend" / "open_webui" / "routers" / "workspace_catalog.py").read_text(encoding="utf-8")
-    assert "CatalogFilters" in patch
-    assert "CatalogBadges" in patch
-    assert '@router.get("/status"' in router
-    assert 'kind="function"' in router
-    assert "/workspace/functions" in patch
+    assert not (override / "src").exists(), "Frontend overrides src folder should be deleted"
+    assert not (override / "backend").exists(), "Backend overrides folder should be deleted"
+    assert (override / "Dockerfile").exists(), "Dockerfile for gVisor runsc should exist"
+    assert (override / "README.md").exists(), "Transition note README.md should exist"
