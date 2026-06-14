@@ -7,7 +7,7 @@ COPY wheelhouse/langgraph-orchestrator /wheelhouse
 RUN pip install --no-cache-dir --no-index --find-links=/wheelhouse -r requirements.txt \
  && rm -rf /wheelhouse
 
-COPY backend/langgraph_orchestrator.py backend/hitl_broker.py ./
+COPY services/langgraph-orchestrator/langgraph_orchestrator.py services/langgraph-orchestrator/hitl_broker.py ./
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \

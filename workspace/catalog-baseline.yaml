@@ -2,12 +2,14 @@
   "models": {
     "qwen35": {
       "name": "Preset - General - Qwen3.5",
+      "description": "General-purpose local assistant with web search and code interpretation.",
       "tool_ids": ["inline_visualizer"],
       "skill_ids": ["visualize"],
       "default_features": ["web_search", "code_interpreter"],
       "tags": ["general"],
       "capabilities": ["file_context", "vision", "file_upload", "web_search", "code_interpreter", "citations", "status_updates", "usage", "builtin_tools"],
-      "builtin_tools": ["web_search", "code_interpreter"]
+      "builtin_tools": ["web_search", "code_interpreter"],
+      "remove_params": ["custom_params"]
     },
     "qwen257b": {
       "name": "Preset - Vision - Qwen2.5 VL 7B",
@@ -24,9 +26,14 @@
       "skill_ids": [],
       "default_features": [],
       "tags": ["roleplay"],
-      "knowledge_ids": ["51e77006-e512-4bb1-9d64-0cdb87c0526d"],
-      "knowledge_context": "full",
-      "remove_params": ["system", "function_calling"],
+      "type": "persona",
+      "system_suppressed": true,
+      "recommended_voice": "af_bella",
+      "auto_enable_call_mode": true,
+      "knowledge": {
+        "ids": ["51e77006-e512-4bb1-9d64-0cdb87c0526d"],
+        "context": "full"
+      },
       "capabilities": ["file_context", "citations", "status_updates"]
     },
     "-data-analyst--developer": {
@@ -39,16 +46,25 @@
       "builtin_tools": ["code_interpreter"]
     },
     "web-search": {
-      "name": "web search",
+      "name": "Workflow - Research - Evidence-Backed Web",
+      "description": "A guided research workflow backed by Deep Web MCP. It performs bounded multi-hop search, validates links, and returns evidence with citations.",
+      "clone_from": "qwen35",
       "tool_ids": ["web_research", "request_user_clarification", "docling_ingestion"],
       "skill_ids": ["evidence-backed-web-research"],
       "default_features": [],
-      "tags": ["research", "web-search"],
+      "tags": ["workflow", "research", "web-search", "evidence-backed"],
       "capabilities": ["citations", "status_updates", "usage"],
+      "catalog": {
+        "kind": "workflow",
+        "entrypoint": "/?model=web-search",
+        "orchestrator": "deep-web-mcp",
+        "validation_status": "passed",
+        "dependency_health": "healthy"
+      },
       "params": {
         "function_calling": "native",
         "temperature": 0,
-        "system": "You are the web-search specialist operating under a strict ReAct execution cycle.\n\n## MANDATORY EXECUTION CYCLE\n\nFor EVERY tool invocation you MUST emit the following four blocks in order:\n\n**Thought**: [State the exact data gap this action targets. Explain why this specific tool call addresses it. Identify what the user's core intent requires.]\n\n**Action**: [Invoke research_web or request_user_clarification — never any other tool.]\n\n**Observation**: [Summarise the tool result. List what factual data was obtained. Identify what is still missing relative to the user's core intent.]\n\n**Evaluation**: Is the gathered data sufficient to fully and accurately answer the user's core intent?\n  - YES → Synthesise the final answer immediately. No further tool calls.\n  - NO  → Identify the precise data gap. Start a new Thought/Action/Observation/Evaluation cycle.\n\n## TOOL SELECTION RULES\n\n### research_web\nUse for ALL queries that require current or external information. Tool selection must be based entirely on structural data requirements — never on keyword presence. Parameters:\n- query: str — the concrete research sub-query for this hop\n- strategy: 'auto' | 'general' | 'deep'\n  - 'deep' for: investigate, comprehensive, exhaustive, compare, why, landscape, evidence, report\n  - 'general' for: immediate factual lookups, definitions, quick checks\n- domain_filters: list of {domain, mode} dicts for scoped searches\n- max_sources: int (1-8)\n\nThe tool internally manages up to 4 execution hops with concurrent link validation. You do NOT need to call it more than once per Thought/Action cycle — the tool handles gap-filling internally. Each tool call is ONE hop in the agentic loop.\n\n### request_user_clarification\nInvoke ONLY when the query contains SEVERE structural ambiguity that makes it impossible to form any concrete research target:\n  - Completely missing technical scope (cannot determine domain or product)\n  - Undefined comparative baseline ('compare X' with no second entity or dimension)\n  - Unresolvable noun reference (pronoun or abbreviation with zero prior context)\n\nDo NOT invoke for broad, vague, or open-ended queries — those are resolvable through deep research.\n\n## HARD CONSTRAINTS\n\n1. You MUST emit a Thought block before every single tool invocation — no exceptions.\n2. The maximum total tool invocations per user query is 4 (4-hop ceiling).\n3. On the 4th hop, you MUST synthesise the best possible answer from all gathered evidence — do not invoke any more tools.\n4. NEVER invent URLs. NEVER omit source citations. NEVER truncate verified clickable Markdown hyperlinks.\n5. Final answers MUST contain verified, clickable Markdown hyperlinks using the format [Title](URL).\n6. NEVER use raw keyword matching to decide which tool to call — base all tool selection on what structural data the user's intent requires.\n\n## CITATION FORMAT (brutalist)\n\nAll citations in the final response must be formatted as verified Markdown links:\n```\n[Source Title](https://verified-url.example.com)\n```\nCitations must be indexed numerically when multiple sources are referenced:\n```\n1. [Title A](https://url-a.example.com)\n2. [Title B](https://url-b.example.com)\n```"
+        "system": "You are an evidence-backed web research workflow. For current or external questions, call research_web once; Deep Web MCP owns multi-hop search, sufficiency checks, link validation, and report construction. Ask a targeted clarification with request_user_clarification only when the request cannot be converted into a concrete research query. Use docling_ingestion only when the user explicitly asks to archive a document into knowledge. Base the final answer on returned evidence, distinguish facts from inference, and preserve verified clickable Markdown citations."
       }
     }
   },
@@ -62,8 +78,8 @@
     "youtube_transcript_provider": {"name": "Tool - Media - YouTube Transcript via Tor"},
     "calendar_ecosystem_tools": {"name": "Tool - Calendar - Read-Only Streamable HTTP", "source": "workspace/catalog-tools/calendar_readonly.py"},
     "home_assit": {"name": "Tool - Home Assistant - Read-Only Fallback", "remove_methods": ["call_service"]},
-    "web_research": {"name": "Tool - Research - General and Deep Web (ReAct Controller)", "source": "workspace/catalog-tools/web_research.py"},
-    "request_user_clarification": {"name": "Tool - Research - Semantic Clarification Intercept", "source": "workspace/catalog-tools/request_user_clarification.py"},
+    "web_research": {"name": "Tool - Research - Deep Web MCP Workflow", "source": "workspace/catalog-tools/web_research.py"},
+    "request_user_clarification": {"name": "Tool - Research - Request Clarification", "source": "workspace/catalog-tools/request_user_clarification.py"},
     "docling_ingestion": {"name": "Tool - Ingestion - Layout-Aware Document Parser (Docling)", "source": "workspace/catalog-tools/docling_ingestion.py"}
   },
   "functions": {
@@ -87,28 +103,10 @@
       "active": true,
       "global": false,
       "risk": "read-only"
-    },
-    "agentic_react_loop": {
-      "name": "Function - Control - Agentic ReAct Loop Interceptor",
-      "source": "workspace/catalog-functions/agentic_react_loop.py",
-      "active": true,
-      "global": false,
-      "model_ids": ["web-search"],
-      "risk": "read-only",
-      "priority": 50
-    },
-    "document_ingestion_router": {
-      "name": "Function - Ingestion - Document Ingestion Router (Docling)",
-      "source": "workspace/catalog-functions/document_ingestion_router.py",
-      "active": true,
-      "global": false,
-      "model_ids": ["web-search"],
-      "risk": "read-only",
-      "priority": 40
     }
   },
   "archive_tools": [],
-  "archive_functions": ["comfy_mcp_pipeline", "langfuse_filter"],
+  "archive_functions": ["comfy_mcp_pipeline", "langfuse_filter", "agentic_react_loop", "document_ingestion_router"],
   "knowledge": {
     "id": "51e77006-e512-4bb1-9d64-0cdb87c0526d",
     "name": "Knowledge - Roleplay - Galadriel",

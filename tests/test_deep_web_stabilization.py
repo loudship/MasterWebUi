@@ -24,6 +24,9 @@ from typing import Optional
 
 ROOT = Path(__file__).resolve().parents[1]
 SERVER_SRC = (ROOT / "deep-web-mcp" / "server.py").read_text(encoding="utf-8")
+MCP_TOOLS_SRC = (ROOT / "deep-web-mcp" / "mcp_tools.py").read_text(encoding="utf-8")
+EXTRACTION_SRC = (ROOT / "deep-web-mcp" / "extraction.py").read_text(encoding="utf-8")
+API_SRC = (ROOT / "deep-web-mcp" / "api.py").read_text(encoding="utf-8")
 DISCOVERY_SRC = (ROOT / "deep-web-mcp" / "web_discovery.py").read_text(encoding="utf-8")
 DATABASE_SRC = (ROOT / "deep-web-mcp" / "database.py").read_text(encoding="utf-8")
 
@@ -34,9 +37,9 @@ DATABASE_SRC = (ROOT / "deep-web-mcp" / "database.py").read_text(encoding="utf-8
 
 
 def test_searxng_timeout_is_five_seconds():
-    assert 'SEARXNG_TIMEOUT_S: float = float(os.getenv("SEARXNG_TIMEOUT_S", "5"))' in SERVER_SRC
-    assert "timeout=SEARXNG_TIMEOUT_S" in SERVER_SRC
-    assert "timeout=30.0" not in SERVER_SRC
+    assert 'SEARXNG_TIMEOUT_S: float = float(os.getenv("SEARXNG_TIMEOUT_S", "5"))' in MCP_TOOLS_SRC
+    assert "timeout=SEARXNG_TIMEOUT_S" in MCP_TOOLS_SRC
+    assert "timeout=30.0" not in MCP_TOOLS_SRC
 
 
 def test_web_discovery_search_timeout_is_five_seconds():
@@ -49,14 +52,14 @@ def test_web_discovery_search_timeout_is_five_seconds():
 
 
 def _extract_prune_namespace() -> dict:
-    tree = ast.parse(SERVER_SRC)
+    tree = ast.parse(EXTRACTION_SRC)
     wanted = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef) and node.name == "ExtractionTask":
             wanted["cls"] = node
-        if isinstance(node, ast.FunctionDef) and node.name == "_prune_task_registry":
+        if isinstance(node, ast.FunctionDef) and node.name == "prune_task_registry":
             wanted["fn"] = node
-    assert "fn" in wanted, "_prune_task_registry must exist in server.py"
+    assert "fn" in wanted, "prune_task_registry must exist in extraction.py"
     module = ast.Module(body=[wanted["cls"], wanted["fn"]], type_ignores=[])
     namespace = {
         "time": time,
@@ -82,7 +85,7 @@ def test_prune_drops_only_expired_finished_tasks():
             "fresh-done": task_cls("fresh-done", "u", status="done", started_at=now - 10),
         }
     )
-    removed = ns["_prune_task_registry"](now)
+    removed = ns["prune_task_registry"](now)
     assert removed == 2
     remaining = set(ns["_task_registry"])
     assert remaining == {"old-running", "fresh-done"}, (
@@ -91,9 +94,9 @@ def test_prune_drops_only_expired_finished_tasks():
 
 
 def test_prune_runs_before_every_registry_seed():
-    seeds = SERVER_SRC.count("_task_registry[task_id] = ExtractionTask(")
-    prunes = SERVER_SRC.count("_prune_task_registry()")
-    assert seeds >= 2
+    seeds = EXTRACTION_SRC.count("_task_registry[task_id] = ExtractionTask(")
+    prunes = EXTRACTION_SRC.count("prune_task_registry()")
+    assert seeds >= 1
     assert prunes >= seeds, (
         f"every registry seed needs a prune call: seeds={seeds}, prunes={prunes}"
     )
@@ -105,7 +108,7 @@ def test_prune_runs_before_every_registry_seed():
 
 
 def test_sse_generator_cancels_orphaned_extraction():
-    generator_section = SERVER_SRC.split("async def _sse_generator", 1)[1]
+    generator_section = API_SRC.split("async def _sse_generator", 1)[1]
     finally_block = generator_section.split("finally:", 1)
     assert len(finally_block) == 2, "_sse_generator needs a finally guard"
     assert "bg_task.cancel()" in finally_block[1].split("# Retrieve final result")[0], (

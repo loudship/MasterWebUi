@@ -44,6 +44,10 @@ weights/
 model-cache/
 model_cache/
 
+# Build / vendor wheel caches (populated locally by scripts/vendor_wheels.ps1
+# for offline Docker builds using --find-links; never commit these heavy assets)
+wheelhouse/
+
 # Python files
 __pycache__/
 *.py[cod]

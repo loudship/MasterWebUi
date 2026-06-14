@@ -12,3 +12,4 @@ node_modules
 package-lock.json
 !open-webui-0.9.6/package-lock.json
 tmp_retrieval
+wheelhouse

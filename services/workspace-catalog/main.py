@@ -190,6 +190,15 @@ async def catalog_status():
             if isinstance(item, dict) and item.get("id") not in existing_knowledge
         ]
         validation_status, last_validated_at = _validation(catalog)
+        missing_details = f"Missing attachments: {', '.join(missing)}" if missing else "All configured attachments resolve."
+        if catalog.get("kind") == "workflow":
+            workflow_details = (
+                f"Workflow entrypoint: {catalog.get('entrypoint', 'unknown')}; "
+                f"orchestrator: {catalog.get('orchestrator', 'unknown')}."
+            )
+            details = f"{workflow_details} {missing_details}"
+        else:
+            details = missing_details
         items.append(CatalogItem(
             id=model.get("id", ""),
             name=model.get("name", ""),
@@ -203,7 +212,7 @@ async def catalog_status():
             version=_version(meta, catalog),
             validation_status=validation_status,
             last_validated_at=last_validated_at,
-            details=f"Missing attachments: {', '.join(missing)}" if missing else "All configured attachments resolve.",
+            details=details,
         ))
 
     for tool in tools:

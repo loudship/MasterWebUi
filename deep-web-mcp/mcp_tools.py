@@ -14,6 +14,12 @@ from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel, Field
 
 from extraction import crawl4ai_extract, new_task
+from policy import (
+    RESEARCH_MAX_HOPS,
+    RESEARCH_MAX_ITERATIONS,
+    RESEARCH_MAX_SOURCES,
+    RESEARCH_TOTAL_BUDGET_S,
+)
 from research import research_web as run_research_web
 from web_discovery import (
     DEFAULT_MAX_CHARS as DISCOVERY_DEFAULT_MAX_CHARS,
@@ -54,10 +60,10 @@ class ResearchInput(BaseModel):
     query:          str  = Field(..., min_length=1, max_length=500)
     strategy: Literal["auto", "general", "deep"] = "auto"
     domain_filters: list[DomainFilterInput] = Field(default_factory=list)
-    max_iterations: int  = Field(default=3,    ge=1,   le=3)
-    max_sources:    int  = Field(default=8,    ge=1,   le=8)
-    max_hops:       int  = Field(default=4,    ge=1,   le=4)
-    total_budget_s: float = Field(default=90.0, ge=10.0, le=900.0)
+    max_iterations: int = Field(default=RESEARCH_MAX_ITERATIONS, ge=1, le=RESEARCH_MAX_ITERATIONS)
+    max_sources: int = Field(default=RESEARCH_MAX_SOURCES, ge=1, le=RESEARCH_MAX_SOURCES)
+    max_hops: int = Field(default=RESEARCH_MAX_HOPS, ge=1, le=RESEARCH_MAX_HOPS)
+    total_budget_s: float = Field(default=RESEARCH_TOTAL_BUDGET_S, ge=10.0, le=900.0)
 
 
 # ---------------------------------------------------------------------------
@@ -193,10 +199,10 @@ async def research_web(
     query: str,
     strategy: Literal["auto", "general", "deep"] = "auto",
     domain_filters: list[dict[str, Any]] | None = None,
-    max_iterations: int = 3,
-    max_sources:    int = 8,
-    max_hops:       int = 4,
-    total_budget_s: float = 90.0,
+    max_iterations: int = RESEARCH_MAX_ITERATIONS,
+    max_sources: int = RESEARCH_MAX_SOURCES,
+    max_hops: int = RESEARCH_MAX_HOPS,
+    total_budget_s: float = RESEARCH_TOTAL_BUDGET_S,
 ) -> str:
     """Run bounded multi-hop web research with verified links and sufficiency evaluation."""
     try:

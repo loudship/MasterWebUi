@@ -12,8 +12,12 @@ from urllib.parse import urlparse
 import httpx
 
 from policy import (
+    RESEARCH_MAX_HOPS,
+    RESEARCH_MAX_ITERATIONS,
+    RESEARCH_MAX_SOURCES,
     RESEARCH_MIN_ACTIVE_SOURCES as _MIN_ACTIVE_SOURCES,
     RESEARCH_MIN_EVIDENCE_CHARS as _MIN_EVIDENCE_CHARS,
+    RESEARCH_TOTAL_BUDGET_S,
 )
 from web_discovery import (
     SEARCH_TIMEOUT_S,
@@ -149,8 +153,8 @@ async def research_web(
     query: str,
     strategy: ResearchStrategy = "auto",
     domain_filters: list[dict[str, Any]] | None = None,
-    max_iterations: int = 3,
-    max_sources: int = 8,
+    max_iterations: int = RESEARCH_MAX_ITERATIONS,
+    max_sources: int = RESEARCH_MAX_SOURCES,
     max_hops: int = 1,
     total_budget_s: float | None = None,
 ) -> dict[str, Any]:
@@ -172,16 +176,16 @@ async def research_web(
 
     filters     = _normalize_filters(domain_filters)
     selected    = choose_strategy(query, strategy)
-    max_iters   = max(1, min(int(max_iterations), 3))
-    max_src     = max(1, min(int(max_sources), 8))
-    max_hops    = max(1, int(max_hops))
+    max_iters   = max(1, min(int(max_iterations), RESEARCH_MAX_ITERATIONS))
+    max_src     = max(1, min(int(max_sources), RESEARCH_MAX_SOURCES))
+    max_hops    = max(1, min(int(max_hops), RESEARCH_MAX_HOPS))
     gate        = asyncio.Semaphore(4)
 
     # ------------------------------------------------------------------
     # Multi-hop outer loop (enabled when max_hops > 1)
     # ------------------------------------------------------------------
     if max_hops > 1:
-        deadline        = time.monotonic() + (total_budget_s or 90.0)
+        deadline        = time.monotonic() + (total_budget_s or RESEARCH_TOTAL_BUDGET_S)
         all_sources:    list[dict[str, Any]] = []
         seen_urls:      set[str]             = set()
         trace:          list[dict[str, Any]] = []

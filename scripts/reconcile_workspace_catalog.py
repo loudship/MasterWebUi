@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import copy
 import json
 import os
 import re
@@ -17,7 +16,25 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-ROOT = Path(__file__).resolve().parents[1]
+SCRIPT_ROOT = Path(__file__).resolve().parent
+if str(SCRIPT_ROOT) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_ROOT))
+
+from workspace_catalog_reconcile.forms import (
+    desired_model,
+    function_form as _function_form,
+    model_form,
+    model_seed,
+    tool_form,
+)
+from workspace_catalog_reconcile.patching import (
+    patch_inline_visualizer_local_only,
+    patch_mcp_url_guard,
+    patch_sandbox,
+    remove_python_method,
+)
+
+ROOT = SCRIPT_ROOT.parent
 DEFAULT_BASELINE = ROOT / "workspace" / "catalog-baseline.yaml"
 BACKUP_ROOT = ROOT / "backups"
 
@@ -104,22 +121,6 @@ PROMPTS = [
         "tags": ["research", "deep-research"],
     },
 ]
-
-BUILTIN_TOOL_CATEGORIES = (
-    "time",
-    "memory",
-    "chats",
-    "notes",
-    "knowledge",
-    "channels",
-    "web_search",
-    "image_generation",
-    "code_interpreter",
-    "tasks",
-    "automations",
-    "calendar",
-)
-
 
 def load_json_yaml(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
@@ -231,117 +232,8 @@ def export_backup(api: Api, target: Path | None = None) -> Path:
     return target
 
 
-def model_form(model: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "id": model["id"],
-        "base_model_id": model.get("base_model_id"),
-        "name": model["name"],
-        "meta": model.get("meta") or {},
-        "params": model.get("params") or {},
-        "access_grants": model.get("access_grants") or [],
-        "is_active": model.get("is_active", True),
-    }
-
-
-def tool_form(
-    tool: dict[str, Any],
-    name: str | None = None,
-    content: str | None = None,
-    catalog_meta: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    meta = tool.get("meta") or {}
-    manifest = copy.deepcopy(meta.get("manifest") or {})
-    if catalog_meta:
-        manifest["catalog"] = catalog_meta
-
-    # Embed risk-level as a native OWUI tag so the workspace list shows it
-    # without any frontend patching.
-    risk = (catalog_meta or {}).get("risk", "read-only")
-    existing_tags = [t for t in (meta.get("tags") or []) if not str(t).startswith("risk:")]
-    tags = existing_tags + [f"risk:{risk}"]
-
-    return {
-        "id": tool["id"],
-        "name": name or tool["name"],
-        "content": content or tool["content"],
-        "meta": {
-            "description": meta.get("description") or "",
-            "manifest": manifest,
-            "tags": tags,
-        },
-        "access_grants": tool.get("access_grants") or [],
-    }
-
-
 def function_form(item_id: str, desired: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "id": item_id,
-        "name": desired["name"],
-        "content": (ROOT / desired["source"]).read_text(encoding="utf-8"),
-        "meta": {
-            "description": desired["name"],
-            "catalog": {
-                "risk": desired.get("risk", "read-only"),
-                "dependency_health": "healthy",
-                "validation_status": "passed",
-                "details": "CPU-only native Filter with bounded local processing.",
-            },
-        },
-    }
-
-
-def patch_sandbox(content: str) -> str:
-    for field in ("NETWORKING_ALLOWED", "AUTO_INSTALL", "CHECK_FOR_UPDATES"):
-        false_pattern = rf"{field}: bool = pydantic\.Field\(\s*default=False"
-        if re.search(false_pattern, content):
-            continue
-        true_pattern = rf"({field}: bool = pydantic\.Field\(\s*default=)True"
-        content, count = re.subn(true_pattern, rf"\1False", content, count=1)
-        if count != 1:
-            raise RuntimeError(f"Could not set safe default for sandbox field {field}")
-    return content
-
-
-def patch_inline_visualizer_local_only(content: str) -> str:
-    pattern = re.compile(
-        r'_KNOWN_CDNS = \(\s*"https://cdnjs\.cloudflare\.com" '
-        r'" https://cdn\.jsdelivr\.net" " https://unpkg\.com"\s*\)'
-    )
-    content, count = pattern.subn('_KNOWN_CDNS = ""', content, count=1)
-    if count == 0 and '_KNOWN_CDNS = ""' not in content:
-        raise RuntimeError("Could not remove the Inline Visualizer CDN allowlist")
-    return content
-
-
-def patch_mcp_url_guard(content: str) -> str:
-    guard = (
-        '        if not self.valves.mcp_server_url.strip().startswith(("http://", "https://")):\n'
-        '            return "Configuration error: set mcp_server_url to an http:// or https:// endpoint."\n'
-    )
-    for method_name in ("list_mcp_tools", "call_mcp_tool"):
-        pattern = re.compile(
-            rf"(?m)^(    async def {method_name}\([^\n]*\) -> [^:\n]+:\n"
-            rf"|    async def {method_name}\((?:[^\n]*\n)*?    \) -> [^:\n]+:\n)"
-        )
-        match = pattern.search(content)
-        if not match:
-            raise RuntimeError(f"Could not find MCP bridge method {method_name}")
-        following = content[match.end() : match.end() + len(guard) + 40]
-        if "Configuration error: set mcp_server_url" not in following:
-            content = pattern.sub(rf"\1{guard}", content, count=1)
-    return content
-
-
-def remove_python_method(content: str, method_name: str) -> str:
-    if not re.search(rf"(?m)^    (?:async )?def {re.escape(method_name)}\(", content):
-        return content
-    pattern = re.compile(
-        rf"(?ms)^    (?:async )?def {re.escape(method_name)}\(.*?(?=^    (?:async )?def |\Z)"
-    )
-    content, count = pattern.subn("", content, count=1)
-    if count != 1:
-        raise RuntimeError(f"Could not remove method {method_name}")
-    return content.rstrip() + "\n"
+    return _function_form(ROOT, item_id, desired)
 
 
 def reconcile_knowledge_document(api: Api, knowledge: dict[str, Any], knowledge_cfg: dict[str, Any]) -> None:
@@ -386,53 +278,6 @@ def reconcile_managed_knowledge(api: Api, cfg: dict[str, Any]) -> dict[str, Any]
     return knowledge
 
 
-def desired_model(current: dict[str, Any], desired: dict[str, Any], knowledge: dict[str, Any]) -> dict[str, Any]:
-    result = model_form(copy.deepcopy(current))
-    result["name"] = desired["name"]
-    meta = result["meta"]
-    meta["toolIds"] = desired.get("tool_ids", [])
-    meta["skillIds"] = desired.get("skill_ids", [])
-    meta.pop("filterIds", None)
-    meta.pop("defaultFilterIds", None)
-    meta["defaultFeatureIds"] = desired.get("default_features", [])
-    meta["tags"] = [{"name": tag} for tag in desired.get("tags", [])]
-    capabilities = {key: False for key in (meta.get("capabilities") or {})}
-    for key in desired.get("capabilities", []):
-        capabilities[key] = True
-    meta["capabilities"] = capabilities
-    allowed_builtin_tools = set(desired.get("builtin_tools", []))
-    if capabilities.get("builtin_tools"):
-        meta["builtinTools"] = {
-            category: False
-            for category in BUILTIN_TOOL_CATEGORIES
-            if category not in allowed_builtin_tools
-        }
-    else:
-        meta.pop("builtinTools", None)
-    if desired.get("knowledge_ids"):
-        meta["knowledge"] = [
-            {
-                "id": item_id,
-                "name": knowledge["name"],
-                "type": "collection",
-                **(
-                    {"context": desired["knowledge_context"]}
-                    if desired.get("knowledge_context")
-                    else {}
-                ),
-            }
-            for item_id in desired["knowledge_ids"]
-        ]
-    else:
-        meta.pop("knowledge", None)
-    result["params"].update(desired.get("params", {}))
-    for key in desired.get("remove_params", []):
-        result["params"].pop(key, None)
-    if current["id"] == "qwen35":
-        result["params"].pop("custom_params", None)
-    return result
-
-
 def expected_actions(snapshot: dict[str, Any], baseline: dict[str, Any]) -> list[str]:
     actions = []
     models = {item["id"]: item for item in snapshot["models"]}
@@ -440,7 +285,18 @@ def expected_actions(snapshot: dict[str, Any], baseline: dict[str, Any]) -> list
     functions = {item["id"]: item for item in snapshot["functions"]}
     for item_id, desired in baseline["models"].items():
         current = models.get(item_id)
-        comparison = current or {**models.get("qwen35", {}), "id": item_id}
+        try:
+            comparison = model_seed(models, item_id, desired)
+        except RuntimeError:
+            comparison = {
+                "id": item_id,
+                "name": desired["name"],
+                "base_model_id": None,
+                "meta": {},
+                "params": {},
+                "access_grants": [],
+                "is_active": True,
+            }
         if not current or model_form(current) != desired_model(comparison, desired, baseline["knowledge"]):
             actions.append(f"update model {item_id}")
     for item_id, desired in baseline["tools"].items():
@@ -617,13 +473,7 @@ def apply(api: Api, baseline: dict[str, Any], backup: Path | None) -> Path:
     for item_id, desired in baseline["models"].items():
         current = models.get(item_id)
         if not current:
-            if item_id != "web-search" or "qwen35" not in models:
-                raise RuntimeError(f"Required model is missing: {item_id}")
-            source = copy.deepcopy(models["qwen35"])
-            source["id"] = item_id
-            source["name"] = desired["name"]
-            source["base_model_id"] = models["qwen35"].get("base_model_id")
-            current = api.request("POST", "/api/v1/models/create", model_form(source))
+            current = api.request("POST", "/api/v1/models/create", model_form(model_seed(models, item_id, desired)))
         form = desired_model(current, desired, knowledge_cfg)
         api.request("POST", "/api/v1/models/model/update", form)
 

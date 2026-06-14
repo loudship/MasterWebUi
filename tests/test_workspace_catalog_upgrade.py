@@ -16,35 +16,69 @@ def load_reconciler():
 def test_baseline_has_exact_target_catalog():
     baseline = json.loads((ROOT / "workspace" / "catalog-baseline.yaml").read_text(encoding="utf-8"))
     assert set(baseline["models"]) == {"qwen35", "qwen257b", "moyclark", "-data-analyst--developer", "web-search"}
-    # 12 tools: original 10 + request_user_clarification + docling_ingestion
+    # Explicit workflow tools remain registered; filter side channels do not.
     assert len(baseline["tools"]) == 12
     assert "request_user_clarification" in baseline["tools"]
     assert "docling_ingestion" in baseline["tools"]
-    # 5 functions: original 3 + agentic_react_loop + document_ingestion_router
     assert set(baseline["functions"]) == {
         "dynamic_intent_router",
         "local_project_context_injector",
         "brutalist_artifact_formatter",
+    }
+    assert baseline["archive_tools"] == []
+    assert set(baseline["archive_functions"]) == {
+        "comfy_mcp_pipeline",
+        "langfuse_filter",
         "agentic_react_loop",
         "document_ingestion_router",
     }
-    assert baseline["archive_tools"] == []
-    assert set(baseline["archive_functions"]) == {"comfy_mcp_pipeline", "langfuse_filter"}
     assert baseline["models"]["qwen35"]["builtin_tools"] == ["web_search", "code_interpreter"]
     assert baseline["models"]["-data-analyst--developer"]["builtin_tools"] == ["code_interpreter"]
-    assert baseline["models"]["moyclark"]["knowledge_context"] == "full"
-    # web-search now has three tool IDs: base research + clarification intercept + docling ingestion
+    assert baseline["models"]["moyclark"]["type"] == "persona"
+    assert baseline["models"]["moyclark"]["recommended_voice"] == "af_bella"
+    assert baseline["models"]["moyclark"]["system_suppressed"] is True
+    assert baseline["models"]["moyclark"].get("remove_params") is None  # eliminated for persona
+    assert baseline["models"]["web-search"]["clone_from"] == "qwen35"
+    assert baseline["models"]["web-search"]["catalog"]["kind"] == "workflow"
     assert "web_research" in baseline["models"]["web-search"]["tool_ids"]
     assert "request_user_clarification" in baseline["models"]["web-search"]["tool_ids"]
     assert "docling_ingestion" in baseline["models"]["web-search"]["tool_ids"]
     assert baseline["functions"]["dynamic_intent_router"]["global"] is True
     assert baseline["functions"]["local_project_context_injector"]["global"] is True
     assert baseline["functions"]["brutalist_artifact_formatter"]["global"] is False
-    # agentic_react_loop is model-scoped (not global) to avoid polluting the global filter chain
-    assert baseline["functions"]["agentic_react_loop"]["global"] is False
-    # document_ingestion_router is also model-scoped at priority 40
-    assert baseline["functions"]["document_ingestion_router"]["global"] is False
-    assert baseline["functions"]["document_ingestion_router"]["priority"] == 40
+
+
+def test_missing_models_are_materialized_from_declarative_clone_source():
+    reconciler = load_reconciler()
+    baseline = reconciler.load_json_yaml(reconciler.DEFAULT_BASELINE)
+    models = {
+        "qwen35": {
+            "id": "qwen35",
+            "name": "Qwen",
+            "base_model_id": "upstream-qwen",
+            "meta": {},
+            "params": {},
+        }
+    }
+    seed = reconciler.model_seed(models, "web-search", baseline["models"]["web-search"])
+    assert seed["id"] == "web-search"
+    assert seed["base_model_id"] == "upstream-qwen"
+
+
+def test_missing_non_clone_model_fails_without_special_cases():
+    reconciler = load_reconciler()
+    try:
+        reconciler.model_seed({}, "missing", {"name": "Missing"})
+    except RuntimeError as exc:
+        assert "Required model is missing: missing" in str(exc)
+    else:
+        raise AssertionError("Expected a missing required model error")
+
+
+def test_workflow_metadata_is_visible_to_catalog_status_service():
+    source = (ROOT / "services" / "workspace-catalog" / "main.py").read_text(encoding="utf-8")
+    assert 'catalog.get("kind") == "workflow"' in source
+    assert "Workflow entrypoint:" in source
 
 
 def test_desired_models_use_a_narrow_builtin_tool_allowlist():

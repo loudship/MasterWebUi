@@ -51,7 +51,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 GATEWAY_DIR = ROOT / "services" / "telemetry-gateway"
 INIT_SCRIPT = ROOT / "infra" / "postgres" / "init" / "002-create-telemetry-role.sh"
-RESET_PWD = ROOT / "reset_pwd.py"
+RESET_PWD = ROOT / "scripts" / "reset_pwd.py"
 ENV_FILE = ROOT / ".env"
 
 

@@ -3,30 +3,12 @@ title: Request User Clarification
 author: Local Operations
 version: 1.0.0
 description: |
-  Semantic clarification pseudo-tool for the ReAct agentic web-search loop.
-
-  The model invokes this tool ONLY when the incoming user query contains
-  severe semantic ambiguity: a completely missing technical scope, an
-  undefined comparative baseline, or an unresolvable noun reference.
-
-  Invoking this tool emits a structured JSON clarification signal that is
-  intercepted by the agentic_react_loop outlet filter, which halts further
-  background search activity and surfaces the targeted question to the user.
-
-  Schema contract
-  ---------------
-  The tool emits a top-level JSON object with the key __clarification_request__
-  set to true and a human-readable question in the question field.  The outlet
-  filter pattern-matches on this key to distinguish clarification halts from
-  normal research results.
-
-  IMPORTANT: This tool must never be invoked for well-formed queries, even
-  vague or broad ones.  It is reserved for structurally unresolvable ambiguity.
+  Native clarification tool for the web-search workflow. It returns a
+  user-facing question directly and does not depend on an outlet filter,
+  marker string, or model-output scraping.
 """
 
 from __future__ import annotations
-
-import json
 
 from pydantic import BaseModel, Field
 
@@ -59,7 +41,7 @@ class Tools:
         ambiguity_type: str = "unresolvable_scope",
     ) -> str:
         """
-        Emit a structured clarification halt signal.
+        Return a targeted user-facing clarification question.
 
         Invoke this tool when — and ONLY when — the user's query cannot be
         resolved into a concrete research target without a direct answer to
@@ -81,18 +63,11 @@ class Tools:
         Returns
         -------
         str
-            JSON-serialized clarification signal consumed by the
-            agentic_react_loop outlet filter.
+            Markdown rendered directly by the assistant.
         """
         question = question.strip()[: self.valves.max_question_chars]
         if not question:
             question = "Could you clarify what you are asking about?"
 
-        return json.dumps(
-            {
-                "__clarification_request__": True,
-                "question": question,
-                "ambiguity_type": ambiguity_type,
-            },
-            ensure_ascii=False,
-        )
+        category = ambiguity_type.strip() or "other"
+        return f"**Before I search, I need one clarification:**\n\n> {question}\n\nAmbiguity: `{category}`"

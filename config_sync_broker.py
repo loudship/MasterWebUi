@@ -1,3 +1,18 @@
+"""
+config_sync_broker.py — One-off "golden config" enforcement tool.
+
+Applies the values from master_webui_config.yaml (RAG, search, models, audio/tts)
+into a running Open WebUI instance via its internal REST APIs.
+
+NOTE: In the current hardened air-gap setup, most of these settings are already
+baked at container startup via docker-compose.yml environment and the
+inference/pipelines/langgraph services. This script is retained for:
+- Initial bootstrap / drift repair on an existing stack
+- Operators who prefer "config as code" POST after the fact
+
+It is intentionally a standalone CLI (if __name__ main) like other ops tools.
+See also: services/config-drift-monitor/ and config/config-drift-baseline.yaml.
+"""
 import os
 import sys
 import yaml

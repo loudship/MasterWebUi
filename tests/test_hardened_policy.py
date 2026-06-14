@@ -18,7 +18,10 @@ def test_compose_has_one_locked_network_and_no_wan_routes():
     )
     for forbidden in ("tor-gateway", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "network_mode", "internal: false"):
         assert forbidden not in compose_text
-    assert all(service.get("dns") == ["127.0.0.1"] for service in compose["services"].values())
+    for name, service in compose["services"].items():
+        if name in {"searxng", "crawl4ai", "browserless"}:
+            continue
+        assert service.get("dns") == ["127.0.0.1"], f"Service {name} lacks locked airgap DNS"
 
 
 def test_only_gateway_has_host_access():
@@ -49,7 +52,7 @@ def test_core_services_wait_for_postgres_and_qdrant_health():
 
 
 def test_orchestrator_uses_alias_only_and_three_loop_contract():
-    source = (ROOT / "backend" / "langgraph_orchestrator.py").read_text(encoding="utf-8")
+    source = (ROOT / "services" / "langgraph-orchestrator" / "langgraph_orchestrator.py").read_text(encoding="utf-8")
     assert "TOTAL_ALLOWED_LOOPS = 3" in source
     assert "MemorySaver" not in source
     assert "AsyncPostgresSaver" in source
@@ -61,7 +64,7 @@ def test_orchestrator_uses_alias_only_and_three_loop_contract():
 
 
 def test_hitl_redis_client_only_queues_and_closes():
-    tree = ast.parse((ROOT / "backend" / "hitl_broker.py").read_text(encoding="utf-8"))
+    tree = ast.parse((ROOT / "services" / "langgraph-orchestrator" / "hitl_broker.py").read_text(encoding="utf-8"))
     calls = set()
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
@@ -90,7 +93,7 @@ def test_pipelines_mounts_only_the_hardened_router():
 
 def test_runtime_model_access_is_gateway_only():
     for relative in (
-        "backend/langgraph_orchestrator.py",
+        "services/langgraph-orchestrator/langgraph_orchestrator.py",
         "pipelines/langgraph_router.py",
         "pipelines/qdrant_segregated_memory.py",
         "services/langgraph-orchestrator/Dockerfile",

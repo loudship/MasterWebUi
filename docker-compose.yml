@@ -308,7 +308,6 @@ services:
       - ./data/searxng:/etc/searxng
     networks:
       - llm-net
-    dns: *airgap-dns
     restart: unless-stopped
 
   crawl4ai:
@@ -325,7 +324,6 @@ services:
       start_period: 20s
     networks:
       - llm-net
-    dns: *airgap-dns
     restart: unless-stopped
 
   browserless:
@@ -340,7 +338,6 @@ services:
     shm_size: 2g
     networks:
       - llm-net
-    dns: *airgap-dns
     restart: unless-stopped
 
   docling-serve:

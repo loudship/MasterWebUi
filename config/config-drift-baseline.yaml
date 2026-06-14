@@ -3,6 +3,10 @@ metadata:
   name: Hardened Open WebUI Configuration Baseline
   description: Read-only expected-state contract. Hardened Compose wins over legacy master configuration.
   precedence: hardened-compose-over-legacy-master-config
+  # The master_webui_config.yaml + config_sync_broker.py path is retained for
+  # operator "apply golden" workflows and historical compatibility, but is not
+  # the active enforcement mechanism for running containers.
+  # Edits to this baseline should be reflected in docker-compose.yml where possible.
   lower_plane_override_policy: warning
 rules:
   - id: admin.openai.base_urls

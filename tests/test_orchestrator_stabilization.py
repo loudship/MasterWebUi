@@ -29,8 +29,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-ORCH_PATH = ROOT / "backend" / "langgraph_orchestrator.py"
-BROKER_PATH = ROOT / "backend" / "hitl_broker.py"
+ORCH_PATH = ROOT / "services" / "langgraph-orchestrator" / "langgraph_orchestrator.py"
+BROKER_PATH = ROOT / "services" / "langgraph-orchestrator" / "hitl_broker.py"
 
 
 def _orch_src() -> str:

@@ -28,23 +28,11 @@ class Tools:
             default="http://deep-web-mcp:8000/research",
             description="Deep Web MCP /research endpoint.",
         )
-        max_hops: int = Field(
-            default=4,
-            ge=1,
-            le=4,
-            description="Maximum research hops (sufficiency-gated, ceiling = 4).",
-        )
-        total_budget_seconds: int = Field(
-            default=90,
-            ge=10,
+        request_timeout_seconds: int = Field(
+            default=120,
+            ge=30,
             le=900,
-            description="Hard wall-clock ceiling for the whole research call.",
-        )
-        per_hop_timeout_seconds: int = Field(
-            default=30,
-            ge=5,
-            le=600,
-            description="HTTP timeout per /research call.",
+            description="Transport timeout; research policy is owned by Deep Web MCP.",
         )
 
     def __init__(self) -> None:
@@ -87,15 +75,12 @@ class Tools:
             "query":          query,
             "strategy":       strategy,
             "domain_filters": domain_filters or [],
-            "max_iterations": 3,
             "max_sources":    max(1, min(int(max_sources), 8)),
-            "max_hops":       self.valves.max_hops,
-            "total_budget_s": float(self.valves.total_budget_seconds),
         }
 
         try:
             async with httpx.AsyncClient(
-                trust_env=False, timeout=float(self.valves.per_hop_timeout_seconds * self.valves.max_hops + 10)
+                trust_env=False, timeout=float(self.valves.request_timeout_seconds)
             ) as client:
                 response = await client.post(self.valves.research_url, json=payload)
                 response.raise_for_status()

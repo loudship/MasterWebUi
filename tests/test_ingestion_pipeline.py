@@ -7,7 +7,7 @@ Coverage
 --------
 1.  Catalog: docling_ingestion tool is registered
 2.  Catalog: web-search model has docling_ingestion in tool_ids
-3.  Catalog: document_ingestion_router function is registered at priority 40
+3.  Catalog: document ingestion is explicit and has no fire-and-forget filter
 4.  Catalog: deep-web-research-docs managed knowledge collection present
 5.  Tool source file exists
 6.  Filter source file exists
@@ -49,7 +49,6 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOL_ROOT = ROOT / "workspace" / "catalog-tools"
-FUNCTION_ROOT = ROOT / "workspace" / "catalog-functions"
 CATALOG = ROOT / "workspace" / "catalog-baseline.yaml"
 
 
@@ -61,14 +60,6 @@ CATALOG = ROOT / "workspace" / "catalog-baseline.yaml"
 def _load_tool():
     path = TOOL_ROOT / "docling_ingestion.py"
     spec = importlib.util.spec_from_file_location("docling_ingestion", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def _load_filter():
-    path = FUNCTION_ROOT / "document_ingestion_router.py"
-    spec = importlib.util.spec_from_file_location("document_ingestion_router", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -109,14 +100,10 @@ def test_catalog_web_search_has_docling_ingestion_tool_id():
     assert "docling_ingestion" in data["models"]["web-search"]["tool_ids"]
 
 
-def test_catalog_document_ingestion_router_function_registered():
+def test_catalog_has_no_document_ingestion_router_side_channel():
     data = _catalog()
-    assert "document_ingestion_router" in data["functions"]
-    fn = data["functions"]["document_ingestion_router"]
-    assert fn["global"] is False
-    assert "web-search" in fn["model_ids"]
-    assert fn["priority"] == 40
-    assert fn["active"] is True
+    assert "document_ingestion_router" not in data["functions"]
+    assert "document_ingestion_router" in data["archive_functions"]
 
 
 def test_catalog_deep_web_research_docs_knowledge_present():
@@ -132,10 +119,6 @@ def test_catalog_deep_web_research_docs_knowledge_present():
 
 def test_docling_ingestion_tool_source_exists():
     assert (TOOL_ROOT / "docling_ingestion.py").is_file()
-
-
-def test_document_ingestion_router_filter_source_exists():
-    assert (FUNCTION_ROOT / "document_ingestion_router.py").is_file()
 
 
 # ===========================================================================
@@ -387,81 +370,5 @@ def test_ingestion_report_contains_markdown_table():
     assert "---" in report
 
 
-# ===========================================================================
-# 25-29: document_ingestion_router filter
-# ===========================================================================
-
-
-def test_filter_inlet_detects_pdf_url_and_injects_marker():
-    mod = _load_filter()
-    filt = mod.Filter()
-    body = {
-        "messages": [
-            {"role": "user", "content": "Please analyse https://example.com/report.pdf for me"}
-        ]
-    }
-    result = filt.inlet(body)
-    system_msgs = [m for m in result["messages"] if m["role"] == "system"]
-    assert any("[doc-ingestion-pending]" in m.get("content", "") for m in system_msgs)
-
-
-def test_filter_inlet_does_not_inject_for_non_document_url():
-    mod = _load_filter()
-    filt = mod.Filter()
-    body = {
-        "messages": [
-            {"role": "user", "content": "Check https://example.com/page.html please"}
-        ]
-    }
-    result = filt.inlet(body)
-    system_msgs = [m for m in result["messages"] if m["role"] == "system"]
-    assert not any("[doc-ingestion-pending]" in m.get("content", "") for m in system_msgs)
-
-
-def test_filter_outlet_passes_through_unchanged():
-    mod = _load_filter()
-    filt = mod.Filter()
-    body = {"messages": [{"role": "assistant", "content": "Normal response text."}]}
-    result = filt.outlet(body)
-    assert result == body
-
-
-def test_filter_inlet_handles_empty_messages():
-    mod = _load_filter()
-    filt = mod.Filter()
-    body = {"messages": []}
-    result = filt.inlet(body)
-    assert result is not None
-    assert "messages" in result
-
-
-def test_filter_inlet_handles_multimodal_content():
-    mod = _load_filter()
-    filt = mod.Filter()
-    body = {
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "Analyse https://corp.example.com/datasheet/chip-v2"},
-                    {"type": "image_url", "image_url": {"url": "https://example.com/img.png"}},
-                ],
-            }
-        ]
-    }
-    result = filt.inlet(body)
-    system_msgs = [m for m in result["messages"] if m["role"] == "system"]
-    assert any("[doc-ingestion-pending]" in m.get("content", "") for m in system_msgs)
-
-
-# ===========================================================================
-# 30: CPU-only imports
-# ===========================================================================
-
-
 def test_docling_tool_cpu_only():
     _cpu_only(TOOL_ROOT / "docling_ingestion.py")
-
-
-def test_document_ingestion_router_cpu_only():
-    _cpu_only(FUNCTION_ROOT / "document_ingestion_router.py")

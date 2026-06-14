@@ -1,3 +1,15 @@
+# master_webui_config.yaml
+# --------------------------------------------------------------------
+# "Golden" configuration target for the optional sync tool (config_sync_broker.py).
+# In the hardened stack the *runtime* source of truth is:
+#   - docker-compose.yml environment blocks (and x- anchors)
+#   - per-service Dockerfile ENV defaults
+#   - services/config-drift-monitor + its config/config-drift-baseline.yaml
+# This YAML is primarily consumed by the one-off sync script to POST values
+# into a running Open WebUI instance for drift correction or initial apply.
+# See test_web_search_defaults.py and the drift baseline metadata for precedence notes.
+# --------------------------------------------------------------------
+
 rag:
   CHUNK_SIZE: 1000
   CHUNK_OVERLAP: 100
