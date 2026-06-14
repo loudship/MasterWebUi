@@ -146,10 +146,7 @@ def test_replacement_tools_are_read_only_or_confirmation_gated():
 
 def test_ui_override_contracts_are_present():
     override = ROOT / "workspace" / "open-webui-overrides"
-    patch = (override / "patch_frontend.mjs").read_text(encoding="utf-8")
-    router = (override / "backend" / "open_webui" / "routers" / "workspace_catalog.py").read_text(encoding="utf-8")
-    assert "CatalogFilters" in patch
-    assert "CatalogBadges" in patch
-    assert '@router.get("/status"' in router
-    assert 'kind="function"' in router
-    assert "/workspace/functions" in patch
+    assert not (override / "src").exists(), "Frontend overrides src folder should be deleted"
+    assert not (override / "backend").exists(), "Backend overrides folder should be deleted"
+    assert (override / "Dockerfile").exists(), "Dockerfile for gVisor runsc should exist"
+    assert (override / "README.md").exists(), "Transition note README.md should exist"

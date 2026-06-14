@@ -1,8 +1,0 @@
-# patch_main.py — retired.
-#
-# workspace_catalog and workspace_research are now standalone services:
-#   services/workspace-catalog/  (catalog status API via public OWUI endpoints)
-#   workspace/catalog-tools/web_research.py  (Open WebUI Tool, thin caller)
-#
-# The Dockerfile no longer copies or executes this file.
-# Kept as a marker so the path reference in the old Dockerfile comment is traceable.

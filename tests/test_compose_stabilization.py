@@ -31,18 +31,13 @@ def test_websocket_support_enabled():
 
 
 def test_brutalist_css_has_no_universal_descendant_selector():
-    patch = (ROOT / "workspace" / "open-webui-overrides" / "patch_frontend.mjs").read_text(
-        encoding="utf-8"
-    )
-    assert ".brutalist-artifact :global(*)" not in patch, (
-        "a universal descendant selector forces full-subtree style recalc on "
-        "every streamed markdown re-render (audit P3-3)"
-    )
-    assert ".brutalist-artifact :global(pre)" in patch
+    override = ROOT / "workspace" / "open-webui-overrides"
+    assert not (override / "patch_frontend.mjs").exists(), "patch_frontend.mjs should be deleted."
+    assert not (override / "src").exists(), "Frontend overrides src folder should be deleted"
 
 
 def test_desktop_eye_routes_through_gateway():
-    src = (ROOT / "desktop_eye.py").read_text(encoding="utf-8")
+    src = (ROOT / "ops" / "desktop_eye.py").read_text(encoding="utf-8")
     assert "127.0.0.1:4322" in src, "vision calls must pass the gateway allowlist + GPU lock"
     assert 'VISION_ENDPOINT", "http://localhost:4321' not in src
     assert "503" in src, "gateway-busy responses must skip the cycle gracefully"
